@@ -116,21 +116,30 @@ async function build(args: { localWorkspaceFolder: string }) {
 async function init(args: { localWorkspaceFolder: string; force: boolean }) {
   const agentSandboxPath = configPath(args);
 
-  if (fs.existsSync(agentSandboxPath) && !args.force) {
-    console.error("Error: .agent-sandbox directory already exists.");
-    console.error("Remove it first if you want to reinitialize.");
-    process.exit(1);
+  if (fs.existsSync(agentSandboxPath)) {
+    if (args.force) {
+      console.log(
+        chalk.yellow("Force removing existing .agent-sandbox directory"),
+      );
+      await $`rm -r ${agentSandboxPath}`;
+    } else {
+      console.error("Error: .agent-sandbox directory already exists.");
+      console.error("Remove it first if you want to reinitialize.");
+      process.exit(1);
+    }
   }
 
   const templatePath = path.join(__dirname, "template");
 
-  await $`cp -r ${templatePath}/ ${agentSandboxPath}/`;
+  await $`cp -RL ${templatePath}/ ${agentSandboxPath}/`;
 
   console.log(
     chalk.green(
       `Initialized .agent-sandbox directory in ${args.localWorkspaceFolder}`,
     ),
   );
+
+  await build(args);
 }
 
 function getContainerName(args: { localWorkspaceFolder: string }) {
@@ -167,7 +176,6 @@ async function start(args: { localWorkspaceFolder: string }) {
   const env = {
     NODE_OPTIONS: "--max-old-space-size=4096",
     CLAUDE_CONFIG_DIR: "/home/node/.claude",
-    POWERLEVEL9K_DISABLE_GITSTATUS: "true",
   };
 
   const workspaceName = path.basename(args.localWorkspaceFolder);
@@ -185,6 +193,13 @@ async function start(args: { localWorkspaceFolder: string }) {
       }
     }
   }
+
+  // This is a little funny: mount .agent-sandbox into the container as /.agent-sandbox, even though it's already
+  // mounted in as part of the workspace itself.
+  // This lets other tools look for that path as a way to check if they're running in the agent sandbox.
+  readonlyMounts.push(
+    `source=${configPath(args)},target=/.agent-sandbox,type=bind,readonly`,
+  );
 
   const ports = config.ports || [];
 

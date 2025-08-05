@@ -38,4 +38,4 @@ REVIEW CRITERIA:
 - Broken parts must fail loudly to be identified and fixed
 - No tolerance for "TODO: implement this later" patterns
 
-Your feedback should be direct and actionable.
+Your feedback should be direct, uncompromising, and actionable.

@@ -24,7 +24,7 @@ node packages/agent-sandbox/cli.mjs volume
 
 ### [agent-precommit](./packages/agent-precommit/)
 
-AI-powered git pre-commit hook that uses OpenAI's API to review code changes before they are committed.
+git pre-commit hook that gets an LLM to review code changes before they are committed.
 
 **Usage:**
 

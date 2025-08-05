@@ -3,10 +3,9 @@
 // Inspired by https://gist.github.com/huntcsg/c4fe3acf4f7d2fe1ca16e5518a27a23e
 // via https://x.com/xlatentspace
 
-import { execSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
-import * as os from "os";
+import { $, chalk, spinner } from "zx";
 import { fileURLToPath } from "url";
 import OpenAI from "openai";
 import { parseArgs } from "util";
@@ -27,42 +26,118 @@ interface ReviewData {
   review: ReviewResult;
 }
 
+async function main() {
+  const args = parseArgs({
+    args: process.argv.slice(2),
+    allowPositionals: true,
+    options: {
+      objective: {
+        type: "string",
+        short: "m",
+      },
+      force: {
+        type: "boolean",
+        default: false,
+      },
+      "sandbox-only": {
+        type: "boolean",
+        default: false,
+      },
+    },
+  });
+
+  for (const env of [path.join(await getDataDir(), ".env"), ".env"]) {
+    if (fs.existsSync(env)) {
+      loadEnvFile(env);
+    }
+  }
+
+  if (args.positionals[0] === "init") {
+    await init({ force: args.values.force });
+  } else {
+    await review(args.values);
+  }
+}
+
+async function init(args: { force: boolean }) {
+  const dataDir = await getDataDir();
+  if (fs.existsSync(dataDir)) {
+    if (args.force) {
+      console.log(
+        chalk.yellow("Force removing existing .agent-sandbox directory"),
+      );
+      await $`rm -r ${dataDir}`;
+    } else {
+      console.error(`Error: ${dataDir} directory already exists.`);
+      console.error("Remove it first if you want to reinitialize.");
+      process.exit(1);
+    }
+  }
+
+  fs.mkdirSync(dataDir, { recursive: true });
+  await $`cp -RL ${path.join(__dirname, "template")}/ ${dataDir}/`;
+  await $`mv ${dataDir}/.env.example ${dataDir}/.env`;
+  console.log(chalk.yellow(`Initialized agent-precommit in ${dataDir}`));
+
+  const command = process.argv.slice(0, process.argv.indexOf("init")).join(" ");
+  console.log(
+    chalk.yellow(`Set environment variables in ${dataDir}/.env and add:`),
+  );
+  console.log(chalk.white(command));
+  console.log(chalk.yellow(`to your precommit hook`));
+}
+
+async function review(args: { objective?: string; "sandbox-only": boolean }) {
+  if (args["sandbox-only"] && !fs.existsSync(`/.agent-sandbox`)) {
+    console.log(
+      chalk.yellow(
+        `Skipping agent-precommit review because /.agent-sandbox doesn't exist`,
+      ),
+    );
+    return;
+  }
+
+  const [gitStatus, diff] = await getGitContext();
+
+  if (!diff.trim()) {
+    console.log("No changes to review");
+    process.exit(0);
+  }
+
+  const result = await spinner(chalk.blue(`Requesting review...`), () =>
+    requestReview(args.objective, gitStatus, diff),
+  );
+
+  await saveReview(args.objective, gitStatus, diff, result);
+
+  console.log(result.pass ? chalk.green("✅ PASSED") : chalk.red("❌ FAILED"));
+
+  if (result.feedback.trim()) {
+    console.log(`Feedback:\n${result.feedback}`);
+  }
+
+  if (!result.pass) {
+    process.exitCode = 1;
+  }
+}
+
 /**
  * Get the current git status and staged diff.
  */
-function getGitContext(): [string, string] {
-  const gitStatus = execSync("git status --porcelain", { encoding: "utf8" });
-  const stagedDiff = execSync("git diff --staged", { encoding: "utf8" });
-  return [gitStatus, stagedDiff];
+async function getGitContext(): Promise<[string, string]> {
+  const gitStatus = await $`git status --porcelain`;
+  const stagedDiff = await $`git diff --staged`;
+  return [gitStatus.stdout, stagedDiff.stdout];
 }
 
-/**
- * Find the path path relative to either {repo root}/.agent-precommit or {home dir}/.agent-precommit
- * If the file exists in both locations, the repo path is preferred.
- */
-function resolveDataPath(rel: string): string {
-  const repoPath = path.join(process.cwd(), ".agent-precommit", rel);
-  if (fs.existsSync(repoPath)) {
-    return repoPath;
-  }
-  return path.join(os.homedir(), ".agent-precommit", rel);
+async function getDataDir(): Promise<string> {
+  const repoRoot = await $`git rev-parse --show-toplevel`;
+  return path.join(repoRoot.stdout.trim(), ".agent-precommit");
 }
 
-function getSystemPrompt(): string {
-  const filepath = resolveDataPath("system-prompt.md");
-
-  let systemPrompt;
-  if (fs.existsSync(filepath)) {
-    systemPrompt = fs.readFileSync(filepath, "utf8");
-  } else {
-    const defaultPath = path.join(__dirname, "default-system-prompt.md");
-    if (!fs.existsSync(defaultPath)) {
-      throw new Error(`Default system prompt not found: ${defaultPath}`);
-    }
-    systemPrompt = fs.readFileSync(defaultPath, "utf8");
-  }
-
-  return systemPrompt;
+async function getSystemPrompt(): Promise<string> {
+  const filepath = path.join(await getDataDir(), "system-prompt.md");
+  return fs.readFileSync(filepath, "utf8");
 }
 
 async function requestReview(
@@ -130,7 +205,7 @@ Review this diff, and be uncompromising about quality standards.`;
   const response = await openai.chat.completions.create({
     model: process.env.AGENT_PRECOMMIT_MODEL || "gpt-4o",
     messages: [
-      { role: "system", content: getSystemPrompt() },
+      { role: "system", content: await getSystemPrompt() },
       { role: "user", content: userMessage },
     ],
     temperature: 1,
@@ -160,14 +235,13 @@ Review this diff, and be uncompromising about quality standards.`;
   return parsed;
 }
 
-function saveReview(
+async function saveReview(
   objective: string | undefined,
   gitStatus: string,
   diff: string,
   result: ReviewResult,
-): void {
-  const reviewsDir = resolveDataPath("reviews");
-
+): Promise<void> {
+  const reviewsDir = path.join(await getDataDir(), "reviews");
   if (!fs.existsSync(reviewsDir)) {
     fs.mkdirSync(reviewsDir, { recursive: true });
   }
@@ -187,47 +261,8 @@ function saveReview(
   fs.writeFileSync(reviewFile, JSON.stringify(reviewData, null, 2));
 }
 
-async function main() {
-  const args = parseArgs({
-    args: process.argv.slice(2),
-    options: {
-      objective: {
-        type: "string",
-        short: "m",
-      },
-    },
-  });
-
-  loadEnvFile(".env");
-
-  const objective = args.values.objective;
-
-  const [gitStatus, diff] = getGitContext();
-
-  if (!diff.trim()) {
-    console.log("No changes to review");
-    process.exit(0);
-  }
-
-  const result = await requestReview(objective, gitStatus, diff);
-
-  saveReview(objective, gitStatus, diff, result);
-
-  // Majority wins
-  const status = result.pass ? "PASSED" : "FAILED";
-  console.log(status);
-
-  if (result.feedback.trim()) {
-    console.log(`Feedback:\n${result.feedback}`);
-  }
-
-  process.exit(result.pass ? 0 : 1);
-}
-
-if (import.meta.url === `file://${process.argv[1]}`) {
-  main().catch((error) => {
-    console.error(`Unhandled error`);
-    console.error(error);
-    process.exit(2);
-  });
-}
+main().catch((error) => {
+  console.error(`Unhandled error`);
+  console.error(error);
+  process.exit(2);
+});

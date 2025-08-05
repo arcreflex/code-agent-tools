@@ -1,4 +1,4 @@
 {
   "ports": [],
-  "readonly": [".git/hooks", ".husky"]
+  "readonly": [".git/hooks", ".husky", ".agent-sandbox"]
 }
