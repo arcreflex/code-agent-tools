@@ -57,12 +57,6 @@ async function build(args: { localWorkspaceFolder: string }) {
 }
 
 async function init(args: { localWorkspaceFolder: string }) {
-  const imageExists = await $`docker images -q ${image}`.quiet();
-  if (!imageExists) {
-    console.log(chalk.yellow(`Image ${image} not found. Building...`));
-    await build(args);
-  }
-
   const agentSandboxPath = configPath(args);
 
   if (fs.existsSync(agentSandboxPath)) {
@@ -83,6 +77,12 @@ async function init(args: { localWorkspaceFolder: string }) {
 }
 
 async function run(args: { localWorkspaceFolder: string }) {
+  const imageExists = await $`docker images -q ${image}`.quiet();
+  if (!imageExists) {
+    console.log(chalk.yellow(`Image ${image} not found. Building...`));
+    await build(args);
+  }
+
   const agentSandboxPath = configPath(args);
 
   const dockerfilePath = path.join(agentSandboxPath, "Dockerfile");
