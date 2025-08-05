@@ -4,6 +4,11 @@ import { $, chalk } from "zx";
 import fs from "node:fs";
 import crypto from "node:crypto";
 
+interface SandboxConfig {
+  ports?: string[];
+  readonly?: string[];
+}
+
 const __dirname = new URL(".", import.meta.url).pathname;
 const image = "agent-sandbox";
 const configVolume = "agent-sandbox-claude-code-config";
@@ -55,6 +60,32 @@ async function main() {
 
 function configPath(args: { localWorkspaceFolder: string }) {
   return path.join(args.localWorkspaceFolder, ".agent-sandbox");
+}
+
+async function loadConfig(args: {
+  localWorkspaceFolder: string;
+}): Promise<SandboxConfig> {
+  const configFile = path.join(configPath(args), "config.json");
+  if (!fs.existsSync(configFile)) {
+    return {};
+  }
+  const content = fs.readFileSync(configFile, "utf8");
+  const parsed = JSON.parse(content);
+  for (const port of parsed.ports) {
+    if (typeof port !== "number") {
+      throw new Error(`Invalid port number: ${port}`);
+    }
+  }
+  for (const readonly of parsed.readonly) {
+    if (typeof readonly !== "string") {
+      throw new Error(`Invalid readonly path: ${readonly}`);
+    }
+    // Make sure it's a reasonable-looking relative path
+    if (readonly.startsWith("/")) {
+      throw new Error(`Readonly paths should be relative: ${readonly}`);
+    }
+  }
+  return parsed;
 }
 
 async function build(args: { localWorkspaceFolder: string }) {
@@ -125,6 +156,8 @@ async function start(args: { localWorkspaceFolder: string }) {
     return;
   }
 
+  const config = await loadConfig(args);
+
   const mounts = [
     "source=agent-sandbox-bashhistory,target=/commandhistory,type=volume",
     `source=${configVolume},target=/home/node/.claude,type=volume`,
@@ -140,6 +173,21 @@ async function start(args: { localWorkspaceFolder: string }) {
   const workspaceName = path.basename(args.localWorkspaceFolder);
   const workspaceMount = `source=${args.localWorkspaceFolder},target=/workspace/${workspaceName},type=bind,consistency=delegated`;
 
+  const readonlyMounts = [];
+  if (config.readonly) {
+    for (const readonlyPath of config.readonly) {
+      const sourcePath = path.join(args.localWorkspaceFolder, readonlyPath);
+      if (fs.existsSync(sourcePath)) {
+        const targetPath = `/workspace/${workspaceName}/${readonlyPath}`;
+        readonlyMounts.push(
+          `source=${sourcePath},target=${targetPath},type=bind,readonly`,
+        );
+      }
+    }
+  }
+
+  const ports = config.ports || [];
+
   const runArgs = [
     "--name",
     containerName,
@@ -151,9 +199,11 @@ async function start(args: { localWorkspaceFolder: string }) {
     ...mounts.flatMap((mount) => ["--mount", mount]),
     "--mount",
     workspaceMount,
+    ...readonlyMounts.flatMap((mount) => ["--mount", mount]),
     "--workdir",
     `/workspace/${workspaceName}`,
     ...Object.entries(env).flatMap(([key, value]) => ["-e", `${key}=${value}`]),
+    ...ports.flatMap((port) => ["-p", port]),
   ];
 
   await $`docker run ${runArgs} ${image} tail -f /dev/null`.quiet();

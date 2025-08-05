@@ -6,7 +6,7 @@ echo "Setting up sandbox environment..."
 # Run firewall initialization
 sudo /usr/local/bin/init-firewall.sh
 
-echo "Firewall setup complete. Starting interactive shell..."
+echo "Firewall setup complete."
 
 # If running interactively, start shell
 if [ -t 0 ]; then
