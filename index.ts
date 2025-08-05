@@ -5,6 +5,7 @@ import fs from "node:fs";
 
 const __dirname = new URL(".", import.meta.url).pathname;
 const image = "claude-code-sandbox";
+const configVolume = "claude-code-config-ccsb";
 
 async function main() {
   const args = parseArgs({
@@ -17,6 +18,8 @@ async function main() {
   } else if (args.positionals[0] === "init") {
     const localWorkspaceFolder = args.positionals[1] || process.cwd();
     await init({ localWorkspaceFolder });
+  } else if (args.positionals[0] === "volume") {
+    console.log(configVolume);
   } else {
     const localWorkspaceFolder = args.positionals[0] || process.cwd();
 
@@ -83,7 +86,7 @@ async function run(args: { localWorkspaceFolder: string }) {
 
   const mounts = [
     "source=claude-code-bashhistory-ccsb,target=/commandhistory,type=volume",
-    "source=claude-code-config-ccsb,target=/home/node/.claude,type=volume",
+    `source=${configVolume},target=/home/node/.claude,type=volume`,
   ];
 
   const env = {
