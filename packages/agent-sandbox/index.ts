@@ -44,7 +44,6 @@ async function build(args: { localWorkspaceFolder: string }) {
   }
 
   const buildArgValues = {
-    TZ: "America/New_York",
     CLAUDE_CODE_VERSION: "latest",
     GIT_DELTA_VERSION: "0.18.2",
   };
@@ -99,6 +98,7 @@ async function run(args: { localWorkspaceFolder: string }) {
   const mounts = [
     "source=agent-sandbox-bashhistory,target=/commandhistory,type=volume",
     `source=${configVolume},target=/home/node/.claude,type=volume`,
+    "source=/etc/localtime,target=/etc/localtime,type=bind,readonly",
   ];
 
   const env = {
