@@ -4,8 +4,8 @@ import { $ } from "zx";
 import fs from "node:fs";
 
 const __dirname = new URL(".", import.meta.url).pathname;
-const image = "claude-code-sandbox";
-const configVolume = "claude-code-config-ccsb";
+const image = "ccsb";
+const configVolume = "ccsb-claude-code-config";
 
 async function main() {
   const args = parseArgs({

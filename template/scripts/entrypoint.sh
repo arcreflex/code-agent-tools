@@ -9,4 +9,4 @@ sudo /usr/local/bin/init-firewall.sh
 echo "Firewall setup complete. Starting interactive shell..."
 
 # Start zsh as the node user
-exec zsh
+exec bash
