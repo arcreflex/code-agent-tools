@@ -1,6 +1,6 @@
 import path from "node:path";
 import { parseArgs } from "util";
-import { $ } from "zx";
+import { $, chalk } from "zx";
 import fs from "node:fs";
 
 const __dirname = new URL(".", import.meta.url).pathname;
@@ -27,11 +27,12 @@ async function main() {
   }
 }
 
+function configPath(args: { localWorkspaceFolder: string }) {
+  return path.join(args.localWorkspaceFolder, ".agent-sandbox");
+}
+
 async function build(args: { localWorkspaceFolder: string }) {
-  const agentSandboxPath = path.join(
-    args.localWorkspaceFolder,
-    ".agent-sandbox",
-  );
+  const agentSandboxPath = configPath(args);
   const dockerfilePath = path.join(agentSandboxPath, "Dockerfile");
 
   if (!fs.existsSync(dockerfilePath)) {
@@ -57,10 +58,13 @@ async function build(args: { localWorkspaceFolder: string }) {
 }
 
 async function init(args: { localWorkspaceFolder: string }) {
-  const agentSandboxPath = path.join(
-    args.localWorkspaceFolder,
-    ".agent-sandbox",
-  );
+  const imageExists = await $`docker images -q ${image}`.quiet();
+  if (!imageExists) {
+    console.log(chalk.yellow(`Image ${image} not found. Building...`));
+    await build(args);
+  }
+
+  const agentSandboxPath = configPath(args);
 
   if (fs.existsSync(agentSandboxPath)) {
     console.error("Error: .agent-sandbox directory already exists.");
@@ -73,18 +77,15 @@ async function init(args: { localWorkspaceFolder: string }) {
   await $`cp -r ${templatePath} ${agentSandboxPath}`;
 
   console.log(
-    `Initialized .agent-sandbox directory in ${args.localWorkspaceFolder}`,
-  );
-  console.log(
-    "You can now customize .agent-sandbox/Dockerfile and .agent-sandbox/scripts/ as needed.",
+    chalk.green(
+      `Initialized .agent-sandbox directory in ${args.localWorkspaceFolder}`,
+    ),
   );
 }
 
 async function run(args: { localWorkspaceFolder: string }) {
-  const agentSandboxPath = path.join(
-    args.localWorkspaceFolder,
-    ".agent-sandbox",
-  );
+  const agentSandboxPath = configPath(args);
+
   const dockerfilePath = path.join(agentSandboxPath, "Dockerfile");
 
   if (!fs.existsSync(dockerfilePath)) {
