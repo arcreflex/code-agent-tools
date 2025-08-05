@@ -75,7 +75,7 @@ async function init(args: { force: boolean }) {
   }
 
   fs.mkdirSync(dataDir, { recursive: true });
-  await $`cp -RL ${path.join(__dirname, "template")}/ ${dataDir}/`;
+  await $`cp -RL ${path.join(__dirname, "..", "template")}/ ${dataDir}/`;
   await $`mv ${dataDir}/.env.example ${dataDir}/.env`;
   console.log(chalk.yellow(`Initialized agent-precommit in ${dataDir}`));
 

@@ -8,6 +8,12 @@
     "packages/*"
   ],
   "scripts": {
+    "build": "npm run build --workspace=packages/agent-precommit && npm run build --workspace=packages/agent-sandbox",
+    "build:precommit": "npm run build --workspace=packages/agent-precommit",
+    "build:sandbox": "npm run build --workspace=packages/agent-sandbox",
+    "publish:precommit": "npm run build:precommit && npm publish packages/agent-precommit",
+    "publish:sandbox": "npm run build:sandbox && npm publish packages/agent-sandbox",
+    "publish:all": "npm run build && npm publish packages/agent-precommit && npm publish packages/agent-sandbox",
     "lint": "eslint packages/*/",
     "lint:fix": "eslint packages/*/ --fix",
     "format": "prettier --write packages/*/",
@@ -27,6 +33,7 @@
     "globals": "^16.3.0",
     "husky": "^9.1.7",
     "lint-staged": "^16.1.2",
+    "pkgroll": "^2.15.1",
     "prettier": "^3.6.2",
     "typescript": "^5.8.3"
   },

@@ -129,7 +129,7 @@ async function init(args: { localWorkspaceFolder: string; force: boolean }) {
     }
   }
 
-  const templatePath = path.join(__dirname, "template");
+  const templatePath = path.join(__dirname, "..", "template");
 
   await $`cp -RL ${templatePath}/ ${agentSandboxPath}/`;
 

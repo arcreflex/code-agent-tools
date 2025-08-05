@@ -1,10 +1,11 @@
 {
-  "name": "agent-sandbox",
+  "name": "@arcreflex/agent-sandbox",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
-  "bin": "cli.mjs",
+  "main": "dist/index.js",
+  "bin": "dist/index.js",
   "scripts": {
+    "build": "pkgroll",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
