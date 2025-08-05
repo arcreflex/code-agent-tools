@@ -8,5 +8,11 @@ sudo /usr/local/bin/init-firewall.sh
 
 echo "Firewall setup complete. Starting interactive shell..."
 
-# Start zsh as the node user
-exec bash
+# If running interactively, start shell
+if [ -t 0 ]; then
+  echo "Starting interactive shell..."
+  exec bash
+else
+  echo "Running in detached mode..."
+  exec tail -f /dev/null
+fi

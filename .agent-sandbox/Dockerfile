@@ -1,8 +1,5 @@
 FROM node:23
 
-ARG TZ
-ENV TZ="$TZ"
-
 ARG CLAUDE_CODE_VERSION=latest
 
 # Install basic development tools and iptables/ipset
