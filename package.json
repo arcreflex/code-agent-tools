@@ -1,26 +1,22 @@
 {
-  "name": "ccsb",
+  "name": "code-agent-tools",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
-  "bin": "cli.mjs",
+  "description": "Monorepo containing tools for using coding agents",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "lint": "eslint .",
-    "lint:fix": "eslint . --fix",
-    "format": "prettier --write .",
+    "lint": "eslint packages/*/",
+    "lint:fix": "eslint packages/*/ --fix",
+    "format": "prettier --write packages/*/",
     "typecheck": "tsc --noEmit",
     "prepare": "husky"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "module",
-  "dependencies": {
-    "ts-node": "^10.9.2",
-    "typescript": "~5.8",
-    "zx": "^8.7.2"
-  },
   "devDependencies": {
     "@eslint/js": "^9.32.0",
     "@types/fs-extra": "^11.0.4",
@@ -31,7 +27,8 @@
     "globals": "^16.3.0",
     "husky": "^9.1.7",
     "lint-staged": "^16.1.2",
-    "prettier": "^3.6.2"
+    "prettier": "^3.6.2",
+    "typescript": "^5.8.3"
   },
   "lint-staged": {
     "*.{ts,tsx,js,jsx}": [

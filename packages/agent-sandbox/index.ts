@@ -4,8 +4,8 @@ import { $ } from "zx";
 import fs from "node:fs";
 
 const __dirname = new URL(".", import.meta.url).pathname;
-const image = "ccsb";
-const configVolume = "ccsb-claude-code-config";
+const image = "agent-sandbox";
+const configVolume = "agent-sandbox-claude-code-config";
 
 async function main() {
   const args = parseArgs({
@@ -28,13 +28,16 @@ async function main() {
 }
 
 async function build(args: { localWorkspaceFolder: string }) {
-  const ccsbPath = path.join(args.localWorkspaceFolder, ".ccsb");
-  const dockerfilePath = path.join(ccsbPath, "Dockerfile");
+  const agentSandboxPath = path.join(
+    args.localWorkspaceFolder,
+    ".agent-sandbox",
+  );
+  const dockerfilePath = path.join(agentSandboxPath, "Dockerfile");
 
   if (!fs.existsSync(dockerfilePath)) {
-    console.error("Error: .ccsb/Dockerfile not found.");
+    console.error("Error: .agent-sandbox/Dockerfile not found.");
     console.error(
-      `Please run 'ccsb init' in ${args.localWorkspaceFolder} first.`,
+      `Please run 'agent-sandbox init' in ${args.localWorkspaceFolder} first.`,
     );
     process.exit(1);
   }
@@ -50,42 +53,50 @@ async function build(args: { localWorkspaceFolder: string }) {
     `${key}=${value}`,
   ]);
 
-  await $`docker build -t ${image} ${buildArgs} -f ${dockerfilePath} ${ccsbPath}`;
+  await $`docker build -t ${image} ${buildArgs} -f ${dockerfilePath} ${agentSandboxPath}`;
 }
 
 async function init(args: { localWorkspaceFolder: string }) {
-  const ccsbPath = path.join(args.localWorkspaceFolder, ".ccsb");
+  const agentSandboxPath = path.join(
+    args.localWorkspaceFolder,
+    ".agent-sandbox",
+  );
 
-  if (fs.existsSync(ccsbPath)) {
-    console.error("Error: .ccsb directory already exists.");
+  if (fs.existsSync(agentSandboxPath)) {
+    console.error("Error: .agent-sandbox directory already exists.");
     console.error("Remove it first if you want to reinitialize.");
     process.exit(1);
   }
 
   const templatePath = path.join(__dirname, "template");
 
-  await $`cp -r ${templatePath} ${ccsbPath}`;
+  await $`cp -r ${templatePath} ${agentSandboxPath}`;
 
-  console.log(`Initialized .ccsb directory in ${args.localWorkspaceFolder}`);
   console.log(
-    "You can now customize .ccsb/Dockerfile and .ccsb/scripts/ as needed.",
+    `Initialized .agent-sandbox directory in ${args.localWorkspaceFolder}`,
+  );
+  console.log(
+    "You can now customize .agent-sandbox/Dockerfile and .agent-sandbox/scripts/ as needed.",
   );
 }
 
 async function run(args: { localWorkspaceFolder: string }) {
-  const ccsbPath = path.join(args.localWorkspaceFolder, ".ccsb");
-  const dockerfilePath = path.join(ccsbPath, "Dockerfile");
+  const agentSandboxPath = path.join(
+    args.localWorkspaceFolder,
+    ".agent-sandbox",
+  );
+  const dockerfilePath = path.join(agentSandboxPath, "Dockerfile");
 
   if (!fs.existsSync(dockerfilePath)) {
-    console.error("Error: .ccsb/Dockerfile not found.");
+    console.error("Error: .agent-sandbox/Dockerfile not found.");
     console.error(
-      `Please run 'ccsb init' in ${args.localWorkspaceFolder} first.`,
+      `Please run 'agent-sandbox init' in ${args.localWorkspaceFolder} first.`,
     );
     process.exit(1);
   }
 
   const mounts = [
-    "source=claude-code-bashhistory-ccsb,target=/commandhistory,type=volume",
+    "source=agent-sandbox-bashhistory,target=/commandhistory,type=volume",
     `source=${configVolume},target=/home/node/.claude,type=volume`,
   ];
 
