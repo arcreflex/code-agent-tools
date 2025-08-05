@@ -68,9 +68,8 @@ ENV COLORTERM=truecolor
 # Claude Code
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
-# Copy and set up firewall script
-COPY init-firewall.sh /usr/local/bin/
-COPY entrypoint.sh /usr/local/bin/
+# Copy and set up scripts
+COPY scripts/ /usr/local/bin/
 USER root
 RUN chmod +x /usr/local/bin/init-firewall.sh && \
   chmod +x /usr/local/bin/entrypoint.sh && \
