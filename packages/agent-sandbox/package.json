@@ -12,6 +12,19 @@
   "author": "",
   "license": "ISC",
   "type": "module",
+  "files": [
+    "dist",
+    "src",
+    "template"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/arcreflex/code-agent-tools.git",
+    "directory": "packages/agent-sandbox"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
     "ts-node": "^10.9.2",
     "typescript": "~5.8",

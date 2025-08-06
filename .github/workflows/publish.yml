@@ -1,0 +1,67 @@
+name: Publish to NPM
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "23"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run linter
+        run: npm run lint
+
+      - name: Run type check
+        run: npm run typecheck
+
+      - name: Build packages
+        run: npm run build
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "23"
+          registry-url: "https://registry.npmjs.org"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build packages
+        run: npm run build
+
+      - name: Publish to NPM
+        run: |
+          # Check if packages have changed versions before publishing
+          if npm view @arcreflex/agent-precommit@$(node -p "require('./packages/agent-precommit/package.json').version") version 2>/dev/null; then
+            echo "agent-precommit version already published, skipping"
+          else
+            echo "Publishing agent-precommit..."
+            npm publish -w @arcreflex/agent-precommit --access public
+          fi
+
+          if npm view @arcreflex/agent-sandbox@$(node -p "require('./packages/agent-sandbox/package.json').version") version 2>/dev/null; then
+            echo "agent-sandbox version already published, skipping"
+          else
+            echo "Publishing agent-sandbox..."
+            npm publish -w @arcreflex/agent-sandbox --access public
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
