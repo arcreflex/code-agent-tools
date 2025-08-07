@@ -65,6 +65,9 @@ ENV PROMPT_COMMAND="history -a"
 # Claude Code
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
+# Add freeclaude alias
+RUN echo "alias freeclaude='claude --dangerously-skip-permissions'" >> /home/node/.bashrc
+
 # Copy and set up scripts
 COPY scripts/ /usr/local/bin/
 USER root
