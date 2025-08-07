@@ -30,10 +30,11 @@ RUN mkdir -p /usr/local/share/npm-global && \
 ARG USERNAME=node
 
 # Persist bash history.
-RUN SNIPPET="export PROMPT_COMMAND='history -a' && export HISTFILE=/commandhistory/.bash_history" \
-  && mkdir /commandhistory \
+RUN mkdir /commandhistory \
   && touch /commandhistory/.bash_history \
-  && chown -R $USERNAME /commandhistory
+  && chown -R $USERNAME /commandhistory \
+  && echo "export HISTFILE=/commandhistory/.bash_history" >> /home/$USERNAME/.bashrc \
+  && echo "export PROMPT_COMMAND='history -a'" >> /home/$USERNAME/.bashrc
 
 # Create workspace and config directories and set permissions
 RUN mkdir -p /workspace /home/node/.claude && \
