@@ -143,11 +143,21 @@ async function init(args: { localWorkspaceFolder: string; force: boolean }) {
   await build(args);
 }
 
+function getWorkspaceHash(localWorkspaceFolder: string): string {
+  const fullPath = path.resolve(localWorkspaceFolder);
+  return crypto.createHash("md5").update(fullPath).digest("hex");
+}
+
 function getContainerName(args: { localWorkspaceFolder: string }) {
-  // hash the full path just in case
-  const fullPath = path.resolve(args.localWorkspaceFolder);
-  const hash = crypto.createHash("md5").update(fullPath).digest("hex");
-  return `agent-sandbox-${path.basename(args.localWorkspaceFolder)}-${hash}`;
+  const workspaceName = path.basename(args.localWorkspaceFolder);
+  const hash = getWorkspaceHash(args.localWorkspaceFolder);
+  return `agent-sandbox-${workspaceName}-${hash}`;
+}
+
+function getHistoryVolumeName(args: { localWorkspaceFolder: string }) {
+  const workspaceName = path.basename(args.localWorkspaceFolder);
+  const hash = getWorkspaceHash(args.localWorkspaceFolder);
+  return `agent-sandbox-history-${workspaceName}-${hash}`;
 }
 
 async function start(args: { localWorkspaceFolder: string }) {
@@ -158,6 +168,7 @@ async function start(args: { localWorkspaceFolder: string }) {
   }
 
   const containerName = getContainerName(args);
+  const historyVolume = getHistoryVolumeName(args);
 
   // Check if already running
   const running = await $`docker ps -q --filter name=${containerName}`.quiet();
@@ -167,9 +178,10 @@ async function start(args: { localWorkspaceFolder: string }) {
   }
 
   const config = await loadConfig(args);
+  const workspaceName = path.basename(args.localWorkspaceFolder);
 
   const mounts = [
-    "source=agent-sandbox-bashhistory,target=/commandhistory,type=volume",
+    `source=${historyVolume},target=/commandhistory,type=volume`,
     `source=${configVolume},target=/home/node/.claude,type=volume`,
     "source=/etc/localtime,target=/etc/localtime,type=bind,readonly",
   ];
@@ -179,7 +191,6 @@ async function start(args: { localWorkspaceFolder: string }) {
     CLAUDE_CONFIG_DIR: "/home/node/.claude",
   };
 
-  const workspaceName = path.basename(args.localWorkspaceFolder);
   const workspaceMount = `source=${args.localWorkspaceFolder},target=/workspace/${workspaceName},type=bind,consistency=delegated`;
 
   const readonlyMounts = [];
