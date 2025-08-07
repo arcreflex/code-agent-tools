@@ -80,7 +80,23 @@ LLM-based pre-commit hook for code review. Reviews staged changes before allowin
 ```bash
 # Run AI code review on staged changes
 agent-precommit
+
+# Provide user context for the review (authoritative intent)
+agent-precommit context "Refactoring auth flow to support OAuth2"
+agent-precommit context --show    # Display current context
+agent-precommit context --clear   # Clear context manually
+
+# Context auto-clears after successful review or 10 minutes
 ```
+
+**User Context Feature:**
+
+The context command allows human developers to provide authoritative intent when necessary. This is particularly useful when:
+- Working with AI coding agents that may not fully explain the purpose of changes
+- Making complex refactors where the intent isn't obvious from the diff
+- Ensuring the reviewer understands business/architectural decisions
+
+Context is marked as "USER PROVIDED CONTEXT (AUTHORITATIVE)" in the review prompt and is respected as the developer's intent.
 
 ## Development
 

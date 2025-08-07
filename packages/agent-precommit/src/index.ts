@@ -26,6 +26,14 @@ interface ReviewData {
   review: ReviewResult;
 }
 
+interface UserContext {
+  message: string;
+  timestamp: string;
+}
+
+const CONTEXT_FILE = "user-context.json";
+const CONTEXT_MAX_AGE_MINUTES = 10;
+
 async function main() {
   const args = parseArgs({
     args: process.argv.slice(2),
@@ -43,6 +51,14 @@ async function main() {
         type: "boolean",
         default: false,
       },
+      clear: {
+        type: "boolean",
+        default: false,
+      },
+      show: {
+        type: "boolean",
+        default: false,
+      },
     },
   });
 
@@ -52,8 +68,12 @@ async function main() {
     }
   }
 
-  if (args.positionals[0] === "init") {
+  const command = args.positionals[0];
+
+  if (command === "init") {
     await init({ force: args.values.force });
+  } else if (command === "context") {
+    await handleContext(args.positionals.slice(1), args.values);
   } else {
     await review(args.values);
   }
@@ -118,6 +138,9 @@ async function review(args: { objective?: string; "sandbox-only": boolean }) {
 
   if (!result.pass) {
     process.exitCode = 1;
+  } else {
+    // Clear user context after successful review to prevent staleness
+    await clearUserContext();
   }
 }
 
@@ -133,6 +156,100 @@ async function getGitContext(): Promise<[string, string]> {
 async function getDataDir(): Promise<string> {
   const repoRoot = await $`git rev-parse --show-toplevel`;
   return path.join(repoRoot.stdout.trim(), ".agent-precommit");
+}
+
+async function handleContext(
+  args: string[],
+  options: { clear?: boolean; show?: boolean },
+): Promise<void> {
+  if (options.clear) {
+    await clearUserContext();
+    console.log(chalk.green("✓ User context cleared"));
+    return;
+  }
+
+  if (options.show) {
+    const context = await getUserContext();
+    if (context) {
+      console.log(chalk.blue("Current user context:"));
+      console.log(context.message);
+      const age = Math.floor(
+        (Date.now() - new Date(context.timestamp).getTime()) / 1000 / 60,
+      );
+      console.log(chalk.gray(`(set ${age} minutes ago)`));
+    } else {
+      console.log(chalk.yellow("No active user context"));
+    }
+    return;
+  }
+
+  // Join all positional args to handle both quoted and unquoted input:
+  // - Quoted: agent-precommit context "multi word message" -> ["multi word message"]
+  // - Unquoted: agent-precommit context multi word message -> ["multi", "word", "message"]
+  const message = args.join(" ").trim();
+  if (!message) {
+    console.error(chalk.red("Error: Please provide a context message"));
+    console.log("Usage: agent-precommit context <message>");
+    console.log("       agent-precommit context --show");
+    console.log("       agent-precommit context --clear");
+    process.exit(1);
+  }
+
+  await setUserContext(message);
+  console.log(chalk.green("✓ User context set:"));
+  console.log(message);
+}
+
+async function setUserContext(message: string): Promise<void> {
+  const dataDir = await getDataDir();
+  const contextPath = path.join(dataDir, CONTEXT_FILE);
+
+  const context: UserContext = {
+    message,
+    timestamp: new Date().toISOString(),
+  };
+
+  if (!fs.existsSync(dataDir)) {
+    fs.mkdirSync(dataDir, { recursive: true });
+  }
+
+  fs.writeFileSync(contextPath, JSON.stringify(context, null, 2));
+}
+
+async function getUserContext(): Promise<UserContext | null> {
+  const dataDir = await getDataDir();
+  const contextPath = path.join(dataDir, CONTEXT_FILE);
+
+  if (!fs.existsSync(contextPath)) {
+    return null;
+  }
+
+  try {
+    const content = fs.readFileSync(contextPath, "utf8");
+    const context: UserContext = JSON.parse(content);
+
+    const age = Date.now() - new Date(context.timestamp).getTime();
+    const maxAge = CONTEXT_MAX_AGE_MINUTES * 60 * 1000;
+
+    if (age > maxAge) {
+      await clearUserContext();
+      return null;
+    }
+
+    return context;
+  } catch {
+    console.error(chalk.yellow("Warning: Failed to read user context"));
+    return null;
+  }
+}
+
+async function clearUserContext(): Promise<void> {
+  const dataDir = await getDataDir();
+  const contextPath = path.join(dataDir, CONTEXT_FILE);
+
+  if (fs.existsSync(contextPath)) {
+    fs.unlinkSync(contextPath);
+  }
 }
 
 async function getSystemPrompt(): Promise<string> {
@@ -166,8 +283,14 @@ async function requestReview(
     extraContext = `CONTEXT:\n${fs.readFileSync(extraContextFile, "utf8")}\n\n`;
   }
 
+  const userContext = await getUserContext();
+  let userContextString = "";
+  if (userContext) {
+    userContextString = `USER PROVIDED CONTEXT (AUTHORITATIVE):\n${userContext.message}\n\n`;
+  }
+
   const userMessage = `${objective ? `OBJECTIVE:\n${objective}\n\n` : ""}
-${extraContext}
+${userContextString}${extraContext}
 GIT STATUS:
 ${gitStatus}
 
