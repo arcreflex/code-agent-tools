@@ -69,8 +69,11 @@ COPY scripts/ /usr/local/bin/
 USER root
 RUN chmod +x /usr/local/bin/init-firewall.sh && \
   chmod +x /usr/local/bin/entrypoint.sh && \
+  chmod +x /usr/local/bin/git-wrapper.sh && \
   echo "node ALL=(root) NOPASSWD: /usr/local/bin/init-firewall.sh" > /etc/sudoers.d/node-firewall && \
-  chmod 0440 /etc/sudoers.d/node-firewall
+  chmod 0440 /etc/sudoers.d/node-firewall && \
+  # Install git wrapper by creating a symlink in /usr/local/bin (which comes before /usr/bin in PATH)
+  ln -sf /usr/local/bin/git-wrapper.sh /usr/local/bin/git
 USER node
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

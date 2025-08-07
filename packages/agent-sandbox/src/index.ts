@@ -35,26 +35,15 @@ async function main() {
   } else if (args.positionals[0] === "start") {
     const localWorkspaceFolder = args.positionals[1] || process.cwd();
     await start({ localWorkspaceFolder });
-  } else if (args.positionals[0] === "shell") {
-    const localWorkspaceFolder = args.positionals[1] || process.cwd();
-    await shell({ localWorkspaceFolder });
   } else if (args.positionals[0] === "stop") {
     const localWorkspaceFolder = args.positionals[1] || process.cwd();
     await stop({ localWorkspaceFolder });
+  } else if (args.positionals[0] === "shell") {
+    const localWorkspaceFolder = args.positionals[1] || process.cwd();
+    await shell({ localWorkspaceFolder });
   } else {
-    const localWorkspaceFolder = args.positionals[0] || process.cwd();
-    const containerName = getContainerName({ localWorkspaceFolder });
-    const containerExists =
-      await $`docker ps -q --filter name=${containerName}`.quiet();
-    if (containerExists) {
-      console.log(
-        chalk.yellow(`Container ${containerName} is already running.`),
-      );
-      console.log(
-        chalk.yellow(`Use 'agent-sandbox shell' to enter the container.`),
-      );
-      process.exit(0);
-    }
+    const localWorkspaceFolder = process.cwd();
+    await shell({ localWorkspaceFolder });
   }
 }
 
@@ -88,6 +77,13 @@ async function loadConfig(args: {
   return parsed;
 }
 
+async function containerExists(localWorkspaceFolder: string) {
+  const containerName = getContainerName({ localWorkspaceFolder });
+  const containerExists =
+    await $`docker ps -q --filter name=${containerName}`.quiet();
+  return !!containerExists.stdout.trim();
+}
+
 async function build(args: { localWorkspaceFolder: string }) {
   const agentSandboxPath = configPath(args);
   const dockerfilePath = path.join(agentSandboxPath, "Dockerfile");
@@ -115,6 +111,11 @@ async function build(args: { localWorkspaceFolder: string }) {
 
 async function init(args: { localWorkspaceFolder: string; force: boolean }) {
   const agentSandboxPath = configPath(args);
+
+  if ((await containerExists(args.localWorkspaceFolder)) && args.force) {
+    console.log(chalk.yellow(`Container is running. Stopping...`));
+    await stop(args);
+  }
 
   if (fs.existsSync(agentSandboxPath)) {
     if (args.force) {
@@ -226,6 +227,10 @@ async function start(args: { localWorkspaceFolder: string }) {
 }
 
 async function shell(args: { localWorkspaceFolder: string }) {
+  if (!(await containerExists(args.localWorkspaceFolder))) {
+    console.log(chalk.yellow(`Container is not running. Starting...`));
+    await start(args);
+  }
   const containerName = getContainerName(args);
   await $({
     stdio: "inherit",
