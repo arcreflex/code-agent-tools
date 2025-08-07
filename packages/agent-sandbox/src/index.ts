@@ -41,6 +41,9 @@ async function main() {
   } else if (args.positionals[0] === "shell") {
     const localWorkspaceFolder = args.positionals[1] || process.cwd();
     await shell({ localWorkspaceFolder });
+  } else if (args.positionals[0] === "show-run") {
+    const localWorkspaceFolder = args.positionals[1] || process.cwd();
+    await showRun({ localWorkspaceFolder });
   } else {
     const localWorkspaceFolder = process.cwd();
     await shell({ localWorkspaceFolder });
@@ -160,23 +163,9 @@ function getHistoryVolumeName(args: { localWorkspaceFolder: string }) {
   return `agent-sandbox-history-${workspaceName}-${hash}`;
 }
 
-async function start(args: { localWorkspaceFolder: string }) {
-  const imageExists = await $`docker images -q ${image}`.quiet();
-  if (!imageExists) {
-    console.log(chalk.yellow(`Image ${image} not found. Building...`));
-    await build(args);
-  }
-
+async function getDockerRunArgs(args: { localWorkspaceFolder: string }) {
   const containerName = getContainerName(args);
   const historyVolume = getHistoryVolumeName(args);
-
-  // Check if already running
-  const running = await $`docker ps -q --filter name=${containerName}`.quiet();
-  if (running.stdout.trim()) {
-    console.log(`Container ${containerName} is already running`);
-    return;
-  }
-
   const config = await loadConfig(args);
   const workspaceName = path.basename(args.localWorkspaceFolder);
 
@@ -206,9 +195,6 @@ async function start(args: { localWorkspaceFolder: string }) {
     }
   }
 
-  // This is a little funny: mount .agent-sandbox into the container as /.agent-sandbox, even though it's already
-  // mounted in as part of the workspace itself.
-  // This lets other tools look for that path as a way to check if they're running in the agent sandbox.
   readonlyMounts.push(
     `source=${configPath(args)},target=/.agent-sandbox,type=bind,readonly`,
   );
@@ -233,8 +219,56 @@ async function start(args: { localWorkspaceFolder: string }) {
     ...ports.flatMap((port) => ["-p", port]),
   ];
 
+  return { runArgs, containerName };
+}
+
+async function start(args: { localWorkspaceFolder: string }) {
+  const imageExists = await $`docker images -q ${image}`.quiet();
+  if (!imageExists) {
+    console.log(chalk.yellow(`Image ${image} not found. Building...`));
+    await build(args);
+  }
+
+  const containerName = getContainerName(args);
+
+  // Check if already running
+  const running = await $`docker ps -q --filter name=${containerName}`.quiet();
+  if (running.stdout.trim()) {
+    console.log(`Container ${containerName} is already running`);
+    return;
+  }
+
+  const { runArgs } = await getDockerRunArgs(args);
+
   await $`docker run ${runArgs} ${image} tail -f /dev/null`.quiet();
   console.log(`Started container: ${containerName}`);
+}
+
+async function showRun(args: { localWorkspaceFolder: string }) {
+  const imageExists = await $`docker images -q ${image}`.quiet();
+  if (!imageExists) {
+    console.log(
+      chalk.yellow(
+        `Image ${image} not found. Run 'agent-sandbox build' first.`,
+      ),
+    );
+    return;
+  }
+
+  const { runArgs } = await getDockerRunArgs(args);
+
+  // Use JSON.stringify for proper shell escaping
+  const escapeArg = (arg: string) => {
+    // If arg contains spaces, quotes, or special shell characters, escape it
+    if (/[ "'$`\\\n\t;|&()<>]/.test(arg)) {
+      return JSON.stringify(arg);
+    }
+    return arg;
+  };
+
+  const command = `docker run ${runArgs.map(escapeArg).join(" ")} ${image} tail -f /dev/null`;
+  console.log(chalk.cyan("Docker run command:"));
+  console.log(command);
 }
 
 async function shell(args: { localWorkspaceFolder: string }) {
