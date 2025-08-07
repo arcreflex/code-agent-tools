@@ -4,6 +4,20 @@ Tools that prevent AI agents from bypassing development quality controls. Blocks
 
 AI agents often take shortcuts that skip code review, bypass pre-commit hooks, or modify development infrastructure. These tools enforce proper development practices by blocking problematic commands and protecting key directories.
 
+## Installation
+
+```bash
+# Install globally via npm
+npm install -g @arcreflex/agent-sandbox
+npm install -g @arcreflex/agent-precommit
+
+# Or install from source
+git clone https://github.com/arcreflex/code-agent-tools.git
+cd code-agent-tools
+npm install
+npm run build
+```
+
 ## Packages
 
 ### [agent-sandbox](./packages/agent-sandbox/)
@@ -12,17 +26,25 @@ Containerized development environments with built-in guardrails. Sandboxing allo
 
 **Features:**
 
-- **Claude Code hook**: Blocks `--no-verify`, force pushes, and other bypass attempts
-- **Readonly Overlay**: Protects `.git/hooks`, `.husky`, `.agent-sandbox` directories from modification
+- **Universal Git Wrapper**: Works with any coding agent CLI (Claude Code, Cursor, Aider, etc.) - blocks `--no-verify`, force pushes, and other bypass attempts
+- **Readonly Overlay**: Protects critical directories from modification (configurable)
+- **Container Persistence**: Dedicated containers with preserved bash history across sessions
+- **Port Forwarding**: Expose container ports for web development
+- **Workspace Isolation**: Each project gets its own container and volumes
 
 **Usage:**
 
 ```bash
-# Run agent-sandbox in current directory
+# Run agent-sandbox in current directory (interactive mode)
 agent-sandbox
 
 # Initialize .agent-sandbox configuration
 agent-sandbox init
+
+# Persistent container workflow
+agent-sandbox start  # Start container in background
+agent-sandbox shell  # Connect to running container (auto-starts if needed)
+agent-sandbox stop   # Stop and remove container
 
 # Build container image
 agent-sandbox build
@@ -30,9 +52,23 @@ agent-sandbox build
 # Print config volume name
 agent-sandbox volume
 
-# Set up Claude Code hooks
+# Set up validation hooks (optional, for Claude Code)
 agent-sandbox setup-hooks
 ```
+
+**Configuration (.agent-sandbox/config.json):**
+
+```json
+{
+  "ports": [3000, 8080],  // Ports to expose from container
+  "readonly": [".git/hooks", ".husky", ".agent-sandbox"]  // Protected directories
+}
+```
+
+**Development Features:**
+- `freeclaude` alias available inside containers for testing Claude Code
+- Persistent bash history across container sessions
+- Workspace-specific volumes prevent cross-project interference
 
 ### [agent-precommit](./packages/agent-precommit/)
 
@@ -48,24 +84,55 @@ agent-precommit
 
 ## Development
 
+### Build System
+
+This monorepo uses [pkgroll](https://github.com/privatenumber/pkgroll) for TypeScript bundling and npm workspaces for package management.
+
 ### Root Commands
 
 ```bash
 # Install all dependencies
 npm install
 
-# Lint all packages
-npm run lint
+# Build all packages
+npm run build
 
-# Type check all packages
-npm run typecheck
+# Build specific packages
+npm run build:sandbox    # Build agent-sandbox only
+npm run build:precommit  # Build agent-precommit only
 
-# Format all packages
-npm run format
+# Code quality
+npm run lint        # Lint all packages
+npm run lint:fix    # Fix linting issues automatically
+npm run typecheck   # Type check all packages
+npm run format      # Format with Prettier
+
+# Publishing (maintainers)
+npm run publish:sandbox    # Publish agent-sandbox
+npm run publish:precommit  # Publish agent-precommit
+npm run publish:all        # Publish all packages
 ```
+
+### CI/CD
+
+- **GitHub Actions**: Automated npm publishing on git tag pushes
+- **Pre-commit Hooks**: Husky runs lint-staged, TypeScript checks, and agent-precommit in sandbox mode
+- **Template Synchronization**: Lint-staged verifies `.agent-sandbox` stays synchronized with source templates
 
 ### Package Structure
 
 - `packages/agent-sandbox/` - Containerized environments with development guardrails
+  - `src/` - TypeScript source code
+  - `template/` - Docker and configuration templates
+  - `dist/` - Built output (generated)
 - `packages/agent-precommit/` - LLM-based pre-commit code review
-- Shared configuration at root level (ESLint, TypeScript, etc.)
+  - `src/` - TypeScript source code
+  - `template/` - Configurable AI review prompts
+  - `dist/` - Built output (generated)
+- Shared configuration at root level (ESLint, TypeScript, Prettier)
+
+### Documentation
+
+- **[AGENTS.md](./AGENTS.md)** - Comprehensive technical reference for AI coding assistants
+- **CLAUDE.md** - Project-specific instructions (references AGENTS.md)
+- Individual package READMEs for package-specific details
