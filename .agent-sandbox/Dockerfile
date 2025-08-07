@@ -32,9 +32,7 @@ ARG USERNAME=node
 # Persist bash history.
 RUN mkdir /commandhistory \
   && touch /commandhistory/.bash_history \
-  && chown -R $USERNAME /commandhistory \
-  && echo "export HISTFILE=/commandhistory/.bash_history" >> /home/$USERNAME/.bashrc \
-  && echo "export PROMPT_COMMAND='history -a'" >> /home/$USERNAME/.bashrc
+  && chown -R ${USERNAME} /commandhistory
 
 # Create workspace and config directories and set permissions
 RUN mkdir -p /workspace /home/node/.claude && \
@@ -61,9 +59,14 @@ ENV EDITOR=vim
 ENV VISUAL=vim
 ENV TERM=xterm-256color
 ENV COLORTERM=truecolor
+ENV HISTFILE=/commandhistory/.bash_history
+ENV PROMPT_COMMAND="history -a"
 
 # Claude Code
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
+
+# Add freeclaude alias
+RUN echo "alias freeclaude='claude --dangerously-skip-permissions'" >> /home/node/.bashrc
 
 # Copy and set up scripts
 COPY scripts/ /usr/local/bin/
