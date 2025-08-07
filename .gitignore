@@ -4,3 +4,4 @@ dist/
 .DS_Store
 *.log
 .agent-precommit/reviews
+.agent-precommit/user-context.json

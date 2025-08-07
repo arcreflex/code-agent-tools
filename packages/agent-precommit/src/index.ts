@@ -21,6 +21,7 @@ interface ReviewResult {
 interface ReviewData {
   timestamp: string;
   objective: string | undefined;
+  user_context: string | undefined;
   git_status: string;
   diff: string;
   review: ReviewResult;
@@ -128,12 +129,30 @@ async function review(args: { objective?: string; "sandbox-only": boolean }) {
     requestReview(args.objective, gitStatus, diff),
   );
 
-  await saveReview(args.objective, gitStatus, diff, result);
+  // Get user context for saving in review data
+  const userContext = await getUserContext();
+  await saveReview(
+    args.objective,
+    gitStatus,
+    diff,
+    result,
+    userContext?.message,
+  );
 
   console.log(result.pass ? chalk.green("✅ PASSED") : chalk.red("❌ FAILED"));
 
   if (result.feedback.trim()) {
     console.log(`Feedback:\n${result.feedback}`);
+  }
+
+  if (!result.pass) {
+    console.log(
+      `\nPlease address any valid points in the feedback above.
+
+If you feel the reviewer might be missing important context, you can ask the human user
+to provide additional context with "agent-precommit context <message>" and then resubmit
+your changes.`,
+    );
   }
 
   if (!result.pass) {
@@ -192,6 +211,15 @@ async function handleContext(
     console.log("Usage: agent-precommit context <message>");
     console.log("       agent-precommit context --show");
     console.log("       agent-precommit context --clear");
+    process.exit(1);
+  }
+
+  // Block setting context when running inside agent-sandbox
+  if (fs.existsSync("/.agent-sandbox")) {
+    console.error(
+      chalk.red("Cannot set user context from within agent-sandbox."),
+    );
+    console.log("Please ask the human user to set context.");
     process.exit(1);
   }
 
@@ -363,6 +391,7 @@ async function saveReview(
   gitStatus: string,
   diff: string,
   result: ReviewResult,
+  userContext?: string,
 ): Promise<void> {
   const reviewsDir = path.join(await getDataDir(), "reviews");
   if (!fs.existsSync(reviewsDir)) {
@@ -375,6 +404,7 @@ async function saveReview(
   const reviewData: ReviewData = {
     timestamp: new Date().toISOString(),
     objective,
+    user_context: userContext,
     git_status: gitStatus,
     diff,
     review: result,
