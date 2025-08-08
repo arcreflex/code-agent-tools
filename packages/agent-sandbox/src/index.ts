@@ -10,7 +10,6 @@ interface SandboxConfig {
 }
 
 const __dirname = new URL(".", import.meta.url).pathname;
-const image = "agent-sandbox";
 const configVolume = "agent-sandbox-claude-code-config";
 
 async function main() {
@@ -64,8 +63,8 @@ async function loadConfig(args: {
   const content = fs.readFileSync(configFile, "utf8");
   const parsed = JSON.parse(content);
   for (const port of parsed.ports) {
-    if (typeof port !== "number") {
-      throw new Error(`Invalid port number: ${port}`);
+    if (typeof port !== "string" || !/^\d+(:\d+)?$/.test(port)) {
+      throw new Error(`Invalid port: ${port}`);
     }
   }
   for (const readonly of parsed.readonly) {
@@ -109,6 +108,8 @@ async function build(args: { localWorkspaceFolder: string }) {
     `${key}=${value}`,
   ]);
 
+  const image = getImageName(args);
+
   await $`docker build -t ${image} ${buildArgs} -f ${dockerfilePath} ${agentSandboxPath}`;
 }
 
@@ -149,6 +150,12 @@ async function init(args: { localWorkspaceFolder: string; force: boolean }) {
 function getWorkspaceHash(localWorkspaceFolder: string): string {
   const fullPath = path.resolve(localWorkspaceFolder);
   return crypto.createHash("md5").update(fullPath).digest("hex");
+}
+
+function getImageName(args: { localWorkspaceFolder: string }) {
+  const workspaceName = path.basename(args.localWorkspaceFolder);
+  const hash = getWorkspaceHash(args.localWorkspaceFolder);
+  return `agent-sandbox-${workspaceName}-${hash}`;
 }
 
 function getContainerName(args: { localWorkspaceFolder: string }) {
@@ -223,6 +230,7 @@ async function getDockerRunArgs(args: { localWorkspaceFolder: string }) {
 }
 
 async function start(args: { localWorkspaceFolder: string }) {
+  const image = getImageName(args);
   const imageExists = await $`docker images -q ${image}`.quiet();
   if (!imageExists) {
     console.log(chalk.yellow(`Image ${image} not found. Building...`));
@@ -245,6 +253,7 @@ async function start(args: { localWorkspaceFolder: string }) {
 }
 
 async function showRun(args: { localWorkspaceFolder: string }) {
+  const image = getImageName(args);
   const imageExists = await $`docker images -q ${image}`.quiet();
   if (!imageExists) {
     console.log(
