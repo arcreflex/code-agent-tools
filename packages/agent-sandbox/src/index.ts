@@ -11,6 +11,7 @@ interface SandboxConfig {
 
 const __dirname = new URL(".", import.meta.url).pathname;
 const configVolume = "agent-sandbox-claude-code-config";
+const codexConfigVolume = "agent-sandbox-codex-config";
 
 async function main() {
   const args = parseArgs({
@@ -179,6 +180,7 @@ async function getDockerRunArgs(args: { localWorkspaceFolder: string }) {
   const mounts = [
     `source=${historyVolume},target=/commandhistory,type=volume`,
     `source=${configVolume},target=/home/node/.claude,type=volume`,
+    `source=${codexConfigVolume},target=/home/node/.codex,type=volume`,
     "source=/etc/localtime,target=/etc/localtime,type=bind,readonly",
   ];
 

@@ -5,12 +5,14 @@ This file provides guidance to AI coding assistants when working with code in th
 ## Project Overview
 
 This is a TypeScript monorepo containing AI development guardrails tools that prevent AI agents from bypassing development quality controls. The project uses npm workspaces to manage two main packages:
+
 - `agent-sandbox`: Containerized environments with development guardrails
 - `agent-precommit`: LLM-based pre-commit code review
 
 ## Development Commands
 
 ### Build Commands
+
 ```bash
 # Build all packages
 npm run build
@@ -21,6 +23,7 @@ npm run build:sandbox     # Build agent-sandbox only
 ```
 
 ### Code Quality
+
 ```bash
 # Run linting
 npm run lint
@@ -36,6 +39,7 @@ npm run format
 ```
 
 ### Publishing
+
 ```bash
 # Publish individual packages
 npm run publish:precommit
@@ -48,6 +52,7 @@ npm run publish:all
 ## Architecture
 
 ### Package Structure
+
 The monorepo uses npm workspaces with two main packages under `packages/`:
 
 1. **agent-sandbox** (packages/agent-sandbox/): Docker-based containerized environments
@@ -67,8 +72,10 @@ The monorepo uses npm workspaces with two main packages under `packages/`:
 - **Pre-commit Hooks**: Husky runs lint-staged, TypeScript checks, and agent-precommit in sandbox mode
 - **Docker Integration**: agent-sandbox builds and manages Docker containers with specific security features
 - **Git Wrapper**: Custom git wrapper script prevents bypass attempts like `--no-verify`
+- **Preinstalled CLIs**: Containers include Claude Code and OpenAI Codex (installed globally). Their configs persist via named volumes mounted at `/home/node/.claude` and `/home/node/.codex`.
 
 ### Important Files
+
 - `/workspace/code-agent-tools/.husky/pre-commit`: Runs lint-staged, TypeScript checks, and agent-precommit
 - `/workspace/code-agent-tools/packages/agent-sandbox/template/scripts/git-wrapper.sh`: Intercepts and validates git commands
 - `/workspace/code-agent-tools/packages/agent-precommit/template/system-prompt.md`: Configurable AI review prompt
@@ -76,6 +83,7 @@ The monorepo uses npm workspaces with two main packages under `packages/`:
 ## Testing
 
 Currently, there are no automated tests configured (test scripts return exit 1). Manual testing approach:
+
 - For agent-sandbox: Use `test-git-wrapper.sh` to verify git command filtering
 - For agent-precommit: Test with actual git commits in sandbox environment
 

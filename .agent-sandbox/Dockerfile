@@ -1,6 +1,7 @@
 FROM node:23
 
 ARG CLAUDE_CODE_VERSION=latest
+ARG CODEX_VERSION=latest
 
 # Install basic development tools and iptables/ipset
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -35,8 +36,8 @@ RUN mkdir /commandhistory \
   && chown -R ${USERNAME} /commandhistory
 
 # Create workspace and config directories and set permissions
-RUN mkdir -p /workspace /home/node/.claude && \
-  chown -R node:node /workspace /home/node/.claude
+RUN mkdir -p /workspace /home/node/.claude /home/node/.codex && \
+  chown -R node:node /workspace /home/node/.claude /home/node/.codex
 
 WORKDIR /workspace
 
@@ -64,6 +65,9 @@ ENV PROMPT_COMMAND="history -a"
 
 # Claude Code
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
+
+# OpenAI Codex CLI
+RUN npm install -g @openai/codex@${CODEX_VERSION}
 
 # Add freeclaude alias
 RUN echo "alias freeclaude='claude --dangerously-skip-permissions'" >> /home/node/.bashrc

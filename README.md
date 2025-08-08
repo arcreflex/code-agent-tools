@@ -66,7 +66,9 @@ agent-sandbox setup-hooks
 ```
 
 **Development Features:**
+- Claude Code and OpenAI Codex CLIs preinstalled (`claude`, `codex`)
 - `freeclaude` alias available inside containers for testing Claude Code
+- Persistent config volumes for `~/.claude` and `~/.codex`
 - Persistent bash history across container sessions
 - Workspace-specific volumes prevent cross-project interference
 
