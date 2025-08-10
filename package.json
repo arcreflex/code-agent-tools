@@ -1,6 +1,6 @@
 {
   "name": "code-agent-tools",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Monorepo containing tools for using coding agents",
   "private": true,
   "type": "module",
