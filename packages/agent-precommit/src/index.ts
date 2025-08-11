@@ -84,9 +84,7 @@ async function init(args: { force: boolean }) {
   const dataDir = await getDataDir();
   if (fs.existsSync(dataDir)) {
     if (args.force) {
-      console.log(
-        chalk.yellow("Force removing existing .agent-sandbox directory"),
-      );
+      console.log(chalk.yellow("Force removing existing .agent-precommit directory"));
       await $`rm -r ${dataDir}`;
     } else {
       console.error(`Error: ${dataDir} directory already exists.`);
@@ -101,20 +99,14 @@ async function init(args: { force: boolean }) {
   console.log(chalk.yellow(`Initialized agent-precommit in ${dataDir}`));
 
   const command = process.argv.slice(0, process.argv.indexOf("init")).join(" ");
-  console.log(
-    chalk.yellow(`Set environment variables in ${dataDir}/.env and add:`),
-  );
+  console.log(chalk.yellow(`Set environment variables in ${dataDir}/.env and add:`));
   console.log(chalk.white(command));
   console.log(chalk.yellow(`to your precommit hook`));
 }
 
 async function review(args: { objective?: string; "sandbox-only": boolean }) {
   if (args["sandbox-only"] && !fs.existsSync(`/.agent-sandbox`)) {
-    console.log(
-      chalk.yellow(
-        `Skipping agent-precommit review because /.agent-sandbox doesn't exist`,
-      ),
-    );
+    console.log(chalk.yellow(`Skipping agent-precommit review because /.agent-sandbox doesn't exist`));
     return;
   }
 
@@ -131,13 +123,7 @@ async function review(args: { objective?: string; "sandbox-only": boolean }) {
 
   // Get user context for saving in review data
   const userContext = await getUserContext();
-  await saveReview(
-    args.objective,
-    gitStatus,
-    diff,
-    result,
-    userContext?.message,
-  );
+  await saveReview(args.objective, gitStatus, diff, result, userContext?.message);
 
   console.log(result.pass ? chalk.green("✅ PASSED") : chalk.red("❌ FAILED"));
 
@@ -177,10 +163,7 @@ async function getDataDir(): Promise<string> {
   return path.join(repoRoot.stdout.trim(), ".agent-precommit");
 }
 
-async function handleContext(
-  args: string[],
-  options: { clear?: boolean; show?: boolean },
-): Promise<void> {
+async function handleContext(args: string[], options: { clear?: boolean; show?: boolean }): Promise<void> {
   if (options.clear) {
     await clearUserContext();
     console.log(chalk.green("✓ User context cleared"));
@@ -192,9 +175,7 @@ async function handleContext(
     if (context) {
       console.log(chalk.blue("Current user context:"));
       console.log(context.message);
-      const age = Math.floor(
-        (Date.now() - new Date(context.timestamp).getTime()) / 1000 / 60,
-      );
+      const age = Math.floor((Date.now() - new Date(context.timestamp).getTime()) / 1000 / 60);
       console.log(chalk.gray(`(set ${age} minutes ago)`));
     } else {
       console.log(chalk.yellow("No active user context"));
@@ -216,9 +197,7 @@ async function handleContext(
 
   // Block setting context when running inside agent-sandbox
   if (fs.existsSync("/.agent-sandbox")) {
-    console.error(
-      chalk.red("Cannot set user context from within agent-sandbox."),
-    );
+    console.error(chalk.red("Cannot set user context from within agent-sandbox."));
     console.log("Please ask the human user to set context.");
     process.exit(1);
   }
@@ -285,20 +264,13 @@ async function getSystemPrompt(): Promise<string> {
   return fs.readFileSync(filepath, "utf8");
 }
 
-async function requestReview(
-  objective: string | undefined,
-  gitStatus: string,
-  diff: string,
-): Promise<ReviewResult> {
+async function requestReview(objective: string | undefined, gitStatus: string, diff: string): Promise<ReviewResult> {
   const apiKey = process.env.AGENT_PRECOMMIT_OPENAI_KEY;
   if (!apiKey) {
-    throw new Error(
-      "Error: AGENT_PRECOMMIT_OPENAI_KEY environment variable not set",
-    );
+    throw new Error("Error: AGENT_PRECOMMIT_OPENAI_KEY environment variable not set");
   }
 
-  const baseURL =
-    process.env.AGENT_PRECOMMIT_OPENAI_BASE_URL || "https://api.openai.com/v1";
+  const baseURL = process.env.AGENT_PRECOMMIT_OPENAI_BASE_URL || "https://api.openai.com/v1";
 
   const openai = new OpenAI({
     apiKey,
@@ -332,8 +304,7 @@ Review this diff, and be uncompromising about quality standards.`;
       type: "function",
       function: {
         name: "provide_review_feedback",
-        description:
-          "Provide structured review feedback with pass/fail determination",
+        description: "Provide structured review feedback with pass/fail determination",
         parameters: {
           type: "object",
           properties: {
@@ -353,10 +324,15 @@ Review this diff, and be uncompromising about quality standards.`;
     },
   ];
 
+  const model = process.env.AGENT_PRECOMMIT_MODEL;
+  if (!model) {
+    throw new Error("Error: AGENT_PRECOMMIT_MODEL environment variable not set");
+  }
+
   const response = await openai.chat.completions.create({
-    model: process.env.AGENT_PRECOMMIT_MODEL || "gpt-4o",
+    model,
     messages: [
-      { role: "system", content: await getSystemPrompt() },
+      { role: "developer", content: await getSystemPrompt() },
       { role: "user", content: userMessage },
     ],
     temperature: 1,
@@ -365,7 +341,7 @@ Review this diff, and be uncompromising about quality standards.`;
       type: "function",
       function: { name: "provide_review_feedback" },
     },
-    max_tokens: 1000,
+    max_completion_tokens: 10000,
   });
 
   const choice = response.choices[0];
@@ -374,10 +350,9 @@ Review this diff, and be uncompromising about quality standards.`;
   }
 
   const toolCall = choice.message?.tool_calls?.[0];
-  if (!toolCall?.function?.arguments) {
-    throw new Error(
-      "Error: OpenAI did not return expected function call response",
-    );
+  if (toolCall?.type !== "function" || !toolCall.function.arguments) {
+    console.error(JSON.stringify(choice.message));
+    throw new Error("Error: OpenAI did not return expected function call response");
   }
 
   const parsed = JSON.parse(toolCall.function.arguments);
