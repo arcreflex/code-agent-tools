@@ -60,6 +60,7 @@ Note: Expiry is calculated dynamically based on timestamp age (10 minutes), not 
 - `AGENT_PRECOMMIT_OPENAI_BASE_URL` - Custom API endpoint (defaults to https://api.openai.com/v1)
 - `AGENT_PRECOMMIT_MODEL` - Model selection (required, no default)
 - `AGENT_PRECOMMIT_EXTRA_CONTEXT_FILE` - Path to additional context file
+- `AGENT_PRECOMMIT_EXTRA_PARAMS` - JSON string for additional OpenAI parameters (optional)
 
 ### Supported Providers
 

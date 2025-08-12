@@ -261,7 +261,19 @@ async function clearUserContext(): Promise<void> {
 
 async function getSystemPrompt(): Promise<string> {
   const filepath = path.join(await getDataDir(), "system-prompt.md");
-  return fs.readFileSync(filepath, "utf8");
+  let prompt = fs.readFileSync(filepath, "utf8");
+
+  const extraContextFile = process.env.AGENT_PRECOMMIT_EXTRA_CONTEXT_FILE;
+  if (extraContextFile && fs.existsSync(extraContextFile)) {
+    prompt += `\n\nCONTEXT:\n${fs.readFileSync(extraContextFile, "utf8")}\n\n`;
+  }
+
+  const userContext = await getUserContext();
+  if (userContext) {
+    prompt += `ADDITIONAL CONTEXT PROVIDED BY PROJECT OWNER (AUTHORITATIVE):\n${userContext.message}\n\n`;
+  }
+
+  return prompt;
 }
 
 async function requestReview(objective: string | undefined, gitStatus: string, diff: string): Promise<ReviewResult> {
@@ -277,20 +289,9 @@ async function requestReview(objective: string | undefined, gitStatus: string, d
     baseURL,
   });
 
-  const extraContextFile = process.env.AGENT_PRECOMMIT_EXTRA_CONTEXT_FILE;
-  let extraContext = "";
-  if (extraContextFile && fs.existsSync(extraContextFile)) {
-    extraContext = `CONTEXT:\n${fs.readFileSync(extraContextFile, "utf8")}\n\n`;
-  }
-
-  const userContext = await getUserContext();
-  let userContextString = "";
-  if (userContext) {
-    userContextString = `USER PROVIDED CONTEXT (AUTHORITATIVE):\n${userContext.message}\n\n`;
-  }
+  const developerMessage = await getSystemPrompt();
 
   const userMessage = `${objective ? `OBJECTIVE:\n${objective}\n\n` : ""}
-${userContextString}${extraContext}
 GIT STATUS:
 ${gitStatus}
 
@@ -329,10 +330,14 @@ Review this diff, and be uncompromising about quality standards.`;
     throw new Error("Error: AGENT_PRECOMMIT_MODEL environment variable not set");
   }
 
+  const extraParams = process.env.AGENT_PRECOMMIT_EXTRA_PARAMS
+    ? JSON.parse(process.env.AGENT_PRECOMMIT_EXTRA_PARAMS)
+    : {};
+
   const response = await openai.chat.completions.create({
     model,
     messages: [
-      { role: "developer", content: await getSystemPrompt() },
+      { role: "developer", content: developerMessage },
       { role: "user", content: userMessage },
     ],
     temperature: 1,
@@ -342,6 +347,7 @@ Review this diff, and be uncompromising about quality standards.`;
       function: { name: "provide_review_feedback" },
     },
     max_completion_tokens: 10000,
+    ...extraParams,
   });
 
   const choice = response.choices[0];
