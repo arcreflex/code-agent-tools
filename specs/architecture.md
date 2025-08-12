@@ -21,6 +21,7 @@ The monorepo uses npm workspaces with two main packages under `packages/`:
 - **Pre-commit Hooks**: Multi-step chain - Husky runs lint-staged, TypeScript checks, and agent-precommit in sandbox mode
 - **Docker Integration**: agent-sandbox builds and manages Docker containers with specific security features
   - Uses a two-layer image model: a shared base image (`agent-sandbox-base:<tag>`) containing common tooling, security scripts, and ENTRYPOINT; and a thin, per-repo image that derives from the base.
+  - Base image built with `agent-sandbox build-base` command from `packages/agent-sandbox/base-image/Dockerfile`
   - Per-repo Dockerfiles should be minimal: `FROM agent-sandbox-base:${BASE_IMAGE_TAG}` plus only repo-specific additions. Workspace code is bind-mounted at runtime.
 - **Git Wrapper**: Custom git wrapper script prevents bypass attempts like `--no-verify`
 - **Preinstalled CLIs**: Containers include Claude Code and OpenAI Codex (installed globally). Their configs persist via named volumes mounted at `/home/node/.claude` and `/home/node/.codex`

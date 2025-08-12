@@ -21,12 +21,42 @@ async function main() {
         type: "boolean",
         default: false,
       },
+      "base-tag": {
+        type: "string",
+        default: "latest",
+      },
+      tag: {
+        type: "string",
+        default: "latest",
+      },
+      "claude-code-version": {
+        type: "string",
+        default: "latest",
+      },
+      "codex-version": {
+        type: "string",
+        default: "latest",
+      },
+      "git-delta-version": {
+        type: "string",
+        default: "0.18.2",
+      },
     },
   });
 
-  if (args.positionals[0] === "build") {
+  if (args.positionals[0] === "build-base") {
+    await buildBase({
+      tag: args.values.tag,
+      claudeCodeVersion: args.values["claude-code-version"],
+      codexVersion: args.values["codex-version"],
+      gitDeltaVersion: args.values["git-delta-version"],
+    });
+  } else if (args.positionals[0] === "build") {
     const localWorkspaceFolder = args.positionals[1] || process.cwd();
-    await build({ localWorkspaceFolder });
+    await build({
+      localWorkspaceFolder,
+      baseTag: args.values["base-tag"],
+    });
   } else if (args.positionals[0] === "init") {
     const localWorkspaceFolder = args.positionals[1] || process.cwd();
     await init({ localWorkspaceFolder, force: args.values.force });
@@ -54,9 +84,7 @@ function configPath(args: { localWorkspaceFolder: string }) {
   return path.join(args.localWorkspaceFolder, ".agent-sandbox");
 }
 
-async function loadConfig(args: {
-  localWorkspaceFolder: string;
-}): Promise<SandboxConfig> {
+async function loadConfig(args: { localWorkspaceFolder: string }): Promise<SandboxConfig> {
   const configFile = path.join(configPath(args), "config.json");
   if (!fs.existsSync(configFile)) {
     return {};
@@ -82,36 +110,69 @@ async function loadConfig(args: {
 
 async function containerExists(localWorkspaceFolder: string) {
   const containerName = getContainerName({ localWorkspaceFolder });
-  const containerExists =
-    await $`docker ps -q --filter name=${containerName}`.quiet();
+  const containerExists = await $`docker ps -q --filter name=${containerName}`.quiet();
   return !!containerExists.stdout.trim();
 }
 
-async function build(args: { localWorkspaceFolder: string }) {
+async function buildBase(args: {
+  tag: string;
+  claudeCodeVersion: string;
+  codexVersion: string;
+  gitDeltaVersion: string;
+}) {
+  const baseDockerfilePath = path.join(__dirname, "..", "base-image", "Dockerfile");
+
+  if (!fs.existsSync(baseDockerfilePath)) {
+    console.error("Error: " + baseDockerfilePath + " not found.");
+    process.exit(1);
+  }
+
+  const imageName = `agent-sandbox-base:${args.tag}`;
+
+  const buildArgValues = {
+    CLAUDE_CODE_VERSION: args.claudeCodeVersion,
+    CODEX_VERSION: args.codexVersion,
+    GIT_DELTA_VERSION: args.gitDeltaVersion,
+  };
+
+  const buildArgs = Object.entries(buildArgValues).flatMap(([key, value]) => [`--build-arg`, `${key}=${value}`]);
+
+  console.log(chalk.cyan(`Building base image: ${imageName}`));
+  console.log(chalk.gray(`Claude Code version: ${args.claudeCodeVersion}`));
+  console.log(chalk.gray(`Codex version: ${args.codexVersion}`));
+  console.log(chalk.gray(`Git Delta version: ${args.gitDeltaVersion}`));
+
+  const contextPath = path.dirname(baseDockerfilePath);
+  await $`docker build -t ${imageName} ${buildArgs} -f ${baseDockerfilePath} ${contextPath}`;
+
+  console.log(chalk.green(`Successfully built base image: ${imageName}`));
+}
+
+async function build(args: { localWorkspaceFolder: string; baseTag?: string }) {
   const agentSandboxPath = configPath(args);
   const dockerfilePath = path.join(agentSandboxPath, "Dockerfile");
 
   if (!fs.existsSync(dockerfilePath)) {
     console.error("Error: .agent-sandbox/Dockerfile not found.");
-    console.error(
-      `Please run 'agent-sandbox init' in ${args.localWorkspaceFolder} first.`,
-    );
+    console.error(`Please run 'agent-sandbox init' in ${args.localWorkspaceFolder} first.`);
     process.exit(1);
   }
 
+  const baseTag = args.baseTag || "latest";
   const buildArgValues = {
-    CLAUDE_CODE_VERSION: "latest",
-    GIT_DELTA_VERSION: "0.18.2",
+    BASE_IMAGE_TAG: baseTag,
   };
 
-  const buildArgs = Object.entries(buildArgValues).flatMap(([key, value]) => [
-    `--build-arg`,
-    `${key}=${value}`,
-  ]);
+  const buildArgs = Object.entries(buildArgValues).flatMap(([key, value]) => [`--build-arg`, `${key}=${value}`]);
 
   const image = getImageName(args);
 
+  console.log(chalk.cyan(`Building image: ${image}`));
+  console.log(chalk.gray(`Using base image tag: ${baseTag}`));
+
   await $`docker build -t ${image} ${buildArgs} -f ${dockerfilePath} ${agentSandboxPath}`;
+
+  console.log(chalk.green(`Successfully built image: ${image}`));
 }
 
 async function init(args: { localWorkspaceFolder: string; force: boolean }) {
@@ -124,9 +185,7 @@ async function init(args: { localWorkspaceFolder: string; force: boolean }) {
 
   if (fs.existsSync(agentSandboxPath)) {
     if (args.force) {
-      console.log(
-        chalk.yellow("Force removing existing .agent-sandbox directory"),
-      );
+      console.log(chalk.yellow("Force removing existing .agent-sandbox directory"));
       await $`rm -r ${agentSandboxPath}`;
     } else {
       console.error("Error: .agent-sandbox directory already exists.");
@@ -139,11 +198,7 @@ async function init(args: { localWorkspaceFolder: string; force: boolean }) {
 
   await $`cp -RL ${templatePath}/ ${agentSandboxPath}/`;
 
-  console.log(
-    chalk.green(
-      `Initialized .agent-sandbox directory in ${args.localWorkspaceFolder}`,
-    ),
-  );
+  console.log(chalk.green(`Initialized .agent-sandbox directory in ${args.localWorkspaceFolder}`));
 
   await build(args);
 }
@@ -197,16 +252,12 @@ async function getDockerRunArgs(args: { localWorkspaceFolder: string }) {
       const sourcePath = path.join(args.localWorkspaceFolder, readonlyPath);
       if (fs.existsSync(sourcePath)) {
         const targetPath = `/workspace/${workspaceName}/${readonlyPath}`;
-        readonlyMounts.push(
-          `source=${sourcePath},target=${targetPath},type=bind,readonly`,
-        );
+        readonlyMounts.push(`source=${sourcePath},target=${targetPath},type=bind,readonly`);
       }
     }
   }
 
-  readonlyMounts.push(
-    `source=${configPath(args)},target=/.agent-sandbox,type=bind,readonly`,
-  );
+  readonlyMounts.push(`source=${configPath(args)},target=/.agent-sandbox,type=bind,readonly`);
 
   const ports = config.ports || [];
 
@@ -234,7 +285,7 @@ async function getDockerRunArgs(args: { localWorkspaceFolder: string }) {
 async function start(args: { localWorkspaceFolder: string }) {
   const image = getImageName(args);
   const imageExists = await $`docker images -q ${image}`.quiet();
-  if (!imageExists) {
+  if (!imageExists.stdout.trim()) {
     console.log(chalk.yellow(`Image ${image} not found. Building...`));
     await build(args);
   }
@@ -257,12 +308,8 @@ async function start(args: { localWorkspaceFolder: string }) {
 async function showRun(args: { localWorkspaceFolder: string }) {
   const image = getImageName(args);
   const imageExists = await $`docker images -q ${image}`.quiet();
-  if (!imageExists) {
-    console.log(
-      chalk.yellow(
-        `Image ${image} not found. Run 'agent-sandbox build' first.`,
-      ),
-    );
+  if (!imageExists.stdout.trim()) {
+    console.log(chalk.yellow(`Image ${image} not found. Run 'agent-sandbox build' first.`));
     return;
   }
 
