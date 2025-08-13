@@ -69,6 +69,10 @@ ENV PROMPT_COMMAND="history -a"
 # Install AI CLIs globally
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 RUN npm install -g @openai/codex@${CODEX_VERSION}
+RUN npm install -g opencode-ai@latest
+
+# Tools for AI agents
+RUN npm install -g @playwright/mcp@latest
 
 # Add freeclaude alias
 RUN echo "alias freeclaude='claude --dangerously-skip-permissions'" >> /home/node/.bashrc
