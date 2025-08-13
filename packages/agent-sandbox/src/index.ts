@@ -25,6 +25,9 @@ async function main() {
         type: "string",
         default: "latest",
       },
+      build: {
+        type: "boolean",
+      },
       tag: {
         type: "string",
         default: "latest",
@@ -62,21 +65,24 @@ async function main() {
     await init({ localWorkspaceFolder, force: args.values.force });
   } else if (args.positionals[0] === "volume") {
     console.log(configVolume);
+  } else if (args.positionals[0] === "restart") {
+    const localWorkspaceFolder = args.positionals[1] || process.cwd();
+    await start({ localWorkspaceFolder, restart: true, build: !!args.values.build });
   } else if (args.positionals[0] === "start") {
     const localWorkspaceFolder = args.positionals[1] || process.cwd();
-    await start({ localWorkspaceFolder });
+    await start({ localWorkspaceFolder, restart: false, build: !!args.values.build });
   } else if (args.positionals[0] === "stop") {
     const localWorkspaceFolder = args.positionals[1] || process.cwd();
     await stop({ localWorkspaceFolder });
   } else if (args.positionals[0] === "shell") {
     const localWorkspaceFolder = args.positionals[1] || process.cwd();
-    await shell({ localWorkspaceFolder });
+    await shell({ localWorkspaceFolder, restart: !!args.values.build, build: !!args.values.build });
   } else if (args.positionals[0] === "show-run") {
     const localWorkspaceFolder = args.positionals[1] || process.cwd();
     await showRun({ localWorkspaceFolder });
   } else {
     const localWorkspaceFolder = process.cwd();
-    await shell({ localWorkspaceFolder });
+    await shell({ localWorkspaceFolder, restart: !!args.values.build, build: !!args.values.build });
   }
 }
 
@@ -282,21 +288,21 @@ async function getDockerRunArgs(args: { localWorkspaceFolder: string }) {
   return { runArgs, containerName };
 }
 
-async function start(args: { localWorkspaceFolder: string }) {
+async function start(args: { localWorkspaceFolder: string; build: boolean; restart: boolean }) {
   const image = getImageName(args);
   const imageExists = await $`docker images -q ${image}`.quiet();
-  if (!imageExists.stdout.trim()) {
-    console.log(chalk.yellow(`Image ${image} not found. Building...`));
+  if (!imageExists.stdout.trim() || args.build) {
     await build(args);
   }
 
   const containerName = getContainerName(args);
-
-  // Check if already running
-  const running = await $`docker ps -q --filter name=${containerName}`.quiet();
-  if (running.stdout.trim()) {
-    console.log(`Container ${containerName} is already running`);
-    return;
+  if (await containerExists(args.localWorkspaceFolder)) {
+    if (args.restart) {
+      await stop(args);
+    } else {
+      console.log(`Container ${containerName} is already running`);
+      return;
+    }
   }
 
   const { runArgs } = await getDockerRunArgs(args);
@@ -329,11 +335,12 @@ async function showRun(args: { localWorkspaceFolder: string }) {
   console.log(command);
 }
 
-async function shell(args: { localWorkspaceFolder: string }) {
-  if (!(await containerExists(args.localWorkspaceFolder))) {
-    console.log(chalk.yellow(`Container is not running. Starting...`));
+async function shell(args: { localWorkspaceFolder: string; restart: boolean; build: boolean }) {
+  const exists = await containerExists(args.localWorkspaceFolder);
+  if (!exists || args.restart) {
     await start(args);
   }
+
   const containerName = getContainerName(args);
   await $({
     stdio: "inherit",
