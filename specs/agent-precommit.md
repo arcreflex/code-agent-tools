@@ -80,6 +80,7 @@ The user context is stored in a JSON file at `.agent-precommit/user-context.json
 - `AGENT_PRECOMMIT_OPENAI_BASE_URL` - Custom API endpoint (defaults to https://api.openai.com/v1)
 - `AGENT_PRECOMMIT_MODEL` - Model selection (required, no default)
 - `AGENT_PRECOMMIT_EXTRA_PARAMS` - JSON string for additional OpenAI parameters (optional)
+- `AGENT_PRECOMMIT_MAX_CONTEXT_BYTES` - Maximum bytes for project context files (defaults to 200000)
 
 ### Supported Providers
 
@@ -104,7 +105,7 @@ All reviews saved to `.agent-precommit/reviews/` directory:
   "timestamp": "ISO 8601 timestamp",
   "objective": "Review objective",
   "userContext": "User context and coding agent instructions",
-  "extraContext": "External context file contents",
+  "projectContext": "Project context file contents",
   "gitStatus": "Git status output",
   "gitDiff": "Git diff --cached output",
   "review": {
@@ -131,7 +132,7 @@ Detects sandbox via `/.agent-sandbox` marker file. When `--sandbox-only` flag is
 
 - Only runs inside sandbox
 - Exits with code 0 outside sandbox
-- No output when skipped
+- Shows skip message when not in sandbox
 - Used in git hooks
 
 ### Protected Files

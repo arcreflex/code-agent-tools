@@ -10,6 +10,7 @@ import { fileURLToPath } from "url";
 import OpenAI from "openai";
 import { parseArgs } from "util";
 import { loadEnvFile } from "process";
+import { glob } from "node:fs/promises";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -21,9 +22,10 @@ interface ReviewResult {
 interface ReviewData {
   timestamp: string;
   objective: string | undefined;
-  user_context: string | undefined;
-  git_status: string;
-  diff: string;
+  userContext: string | undefined;
+  projectContext: string | undefined;
+  gitStatus: string;
+  gitDiff: string;
   review: ReviewResult;
 }
 
@@ -59,6 +61,10 @@ async function main() {
       show: {
         type: "boolean",
         default: false,
+      },
+      "project-context": {
+        type: "string",
+        multiple: true,
       },
     },
   });
@@ -96,6 +102,37 @@ async function init(args: { force: boolean }) {
   fs.mkdirSync(dataDir, { recursive: true });
   await $`cp -RL ${path.join(__dirname, "..", "template")}/ ${dataDir}/`;
   await $`mv ${dataDir}/.env.example ${dataDir}/.env`;
+  let repoRoot;
+  try {
+    repoRoot = await $`git rev-parse --show-toplevel`;
+  } catch {
+    console.error(chalk.yellow("ERROR: not in a git repository"));
+    process.exitCode = 1;
+    return;
+  }
+
+  const gitignorePath = path.join(repoRoot.stdout.trim(), ".gitignore");
+  const gitignoreEntries = [".agent-precommit/reviews", ".agent-precommit/user-context.json"];
+
+  let gitignoreContent = "";
+  if (fs.existsSync(gitignorePath)) {
+    gitignoreContent = fs.readFileSync(gitignorePath, "utf8");
+  }
+
+  const entriesToAdd = gitignoreEntries.filter((entry) => !gitignoreContent.includes(entry));
+
+  if (entriesToAdd.length > 0) {
+    const hasAgentPrecommitSection = gitignoreContent.includes("# Agent Precommit");
+    const newContent =
+      gitignoreContent +
+      (gitignoreContent && !gitignoreContent.endsWith("\n") ? "\n" : "") +
+      (hasAgentPrecommitSection ? "" : "\n# Agent Precommit\n") +
+      entriesToAdd.join("\n") +
+      "\n";
+    fs.writeFileSync(gitignorePath, newContent);
+    console.log(chalk.yellow(`Added ${entriesToAdd.length} entries to .gitignore`));
+  }
+
   console.log(chalk.yellow(`Initialized agent-precommit in ${dataDir}`));
 
   const command = process.argv.slice(0, process.argv.indexOf("init")).join(" ");
@@ -104,7 +141,7 @@ async function init(args: { force: boolean }) {
   console.log(chalk.yellow(`to your precommit hook`));
 }
 
-async function review(args: { objective?: string; "sandbox-only": boolean }) {
+async function review(args: { objective?: string; "sandbox-only": boolean; "project-context"?: string[] }) {
   if (args["sandbox-only"] && !fs.existsSync(`/.agent-sandbox`)) {
     console.log(chalk.yellow(`Skipping agent-precommit review because /.agent-sandbox doesn't exist`));
     return;
@@ -117,18 +154,19 @@ async function review(args: { objective?: string; "sandbox-only": boolean }) {
     process.exit(0);
   }
 
+  const projectContext = await getProjectContext(args["project-context"]);
   const result = await spinner(chalk.blue(`Requesting review...`), () =>
-    requestReview(args.objective, gitStatus, diff),
+    requestReview(args.objective, gitStatus, diff, projectContext),
   );
 
   // Get user context for saving in review data
   const userContext = await getUserContext();
-  await saveReview(args.objective, gitStatus, diff, result, userContext?.message);
-
-  console.log(result.pass ? chalk.green("✅ PASSED") : chalk.red("❌ FAILED"));
+  await saveReview(args.objective, gitStatus, diff, result, userContext?.message, projectContext);
 
   if (result.feedback.trim()) {
-    console.log(`Feedback:\n${result.feedback}`);
+    console.log(result.pass ? chalk.green(`✓ ${result.feedback}`) : chalk.red(`✗ ${result.feedback}`));
+  } else {
+    console.log(result.pass ? chalk.green("✓ PASSED") : chalk.red("✗ FAILED"));
   }
 
   if (!result.pass) {
@@ -161,6 +199,68 @@ async function getGitContext(): Promise<[string, string]> {
 async function getDataDir(): Promise<string> {
   const repoRoot = await $`git rev-parse --show-toplevel`;
   return path.join(repoRoot.stdout.trim(), ".agent-precommit");
+}
+
+async function getProjectContext(globs?: string[]): Promise<string> {
+  if (!globs || globs.length === 0) {
+    return "";
+  }
+
+  const repoRoot = await $`git rev-parse --show-toplevel`;
+  const rootPath = repoRoot.stdout.trim();
+
+  const contextFiles: string[] = [];
+
+  for (const pattern of globs) {
+    try {
+      for await (const entry of glob(pattern, { cwd: rootPath })) {
+        contextFiles.push(entry);
+      }
+    } catch (error) {
+      console.warn(chalk.yellow(`Warning: Failed to process glob pattern "${pattern}": ${error}`));
+    }
+  }
+
+  if (contextFiles.length === 0) {
+    return "";
+  }
+
+  const MAX_CONTEXT_BYTES = process.env.AGENT_PRECOMMIT_MAX_CONTEXT_BYTES
+    ? parseInt(process.env.AGENT_PRECOMMIT_MAX_CONTEXT_BYTES, 10)
+    : 200000; // ~200KB limit to avoid overlong prompts
+
+  let totalBytes = 0;
+  const contextSections: string[] = [];
+
+  for (const filePath of contextFiles) {
+    try {
+      const fullPath = path.join(rootPath, filePath);
+      const content = await fs.promises.readFile(fullPath, "utf8");
+      const section = `## ${filePath}\n\n\`\`\`\n${content}\n\`\`\``;
+
+      if (totalBytes + section.length > MAX_CONTEXT_BYTES) {
+        contextSections.push(`## ${filePath}\n\n\`\`\`\n[TRUNCATED: File too large for context]\n\`\`\``);
+        console.warn(chalk.yellow(`Warning: Context truncated - ${filePath} too large`));
+        break;
+      }
+
+      contextSections.push(section);
+      totalBytes += section.length;
+    } catch (error: unknown) {
+      if (
+        !(typeof error === "object" && error && "code" in error) ||
+        (error.code !== "ENOENT" && error.code !== "EISDIR")
+      ) {
+        console.warn(chalk.yellow(`Warning: Failed to read context file "${filePath}": ${error}`));
+      }
+    }
+  }
+
+  if (contextSections.length === 0) {
+    return "";
+  }
+
+  return `CODEBASE CONTEXT:\n\n${contextSections.join("\n\n")}\n\n`;
 }
 
 async function handleContext(args: string[], options: { clear?: boolean; show?: boolean }): Promise<void> {
@@ -259,24 +359,28 @@ async function clearUserContext(): Promise<void> {
   }
 }
 
-async function getSystemPrompt(): Promise<string> {
+async function getSystemPrompt(projectContext?: string): Promise<string> {
   const filepath = path.join(await getDataDir(), "system-prompt.md");
   let prompt = fs.readFileSync(filepath, "utf8");
 
-  const extraContextFile = process.env.AGENT_PRECOMMIT_EXTRA_CONTEXT_FILE;
-  if (extraContextFile && fs.existsSync(extraContextFile)) {
-    prompt += `\n\nCONTEXT:\n${fs.readFileSync(extraContextFile, "utf8")}\n\n`;
+  if (projectContext && projectContext.trim()) {
+    prompt += `\n\n${projectContext}`;
   }
 
   const userContext = await getUserContext();
   if (userContext) {
-    prompt += `ADDITIONAL CONTEXT PROVIDED BY PROJECT OWNER (AUTHORITATIVE):\n${userContext.message}\n\n`;
+    prompt += `CONTEXT PROVIDED BY PROJECT OWNER (AUTHORITATIVE):\n${userContext.message}\n\n`;
   }
 
   return prompt;
 }
 
-async function requestReview(objective: string | undefined, gitStatus: string, diff: string): Promise<ReviewResult> {
+async function requestReview(
+  objective: string | undefined,
+  gitStatus: string,
+  diff: string,
+  projectContext?: string,
+): Promise<ReviewResult> {
   const apiKey = process.env.AGENT_PRECOMMIT_OPENAI_KEY;
   if (!apiKey) {
     throw new Error("Error: AGENT_PRECOMMIT_OPENAI_KEY environment variable not set");
@@ -289,7 +393,7 @@ async function requestReview(objective: string | undefined, gitStatus: string, d
     baseURL,
   });
 
-  const developerMessage = await getSystemPrompt();
+  const developerMessage = await getSystemPrompt(projectContext);
 
   const userMessage = `${objective ? `OBJECTIVE:\n${objective}\n\n` : ""}
 GIT STATUS:
@@ -373,6 +477,7 @@ async function saveReview(
   diff: string,
   result: ReviewResult,
   userContext?: string,
+  projectContext?: string,
 ): Promise<void> {
   const reviewsDir = path.join(await getDataDir(), "reviews");
   if (!fs.existsSync(reviewsDir)) {
@@ -385,9 +490,10 @@ async function saveReview(
   const reviewData: ReviewData = {
     timestamp: new Date().toISOString(),
     objective,
-    user_context: userContext,
-    git_status: gitStatus,
-    diff,
+    userContext,
+    projectContext,
+    gitStatus,
+    gitDiff: diff,
     review: result,
   };
 
