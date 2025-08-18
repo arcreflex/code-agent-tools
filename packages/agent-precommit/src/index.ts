@@ -34,6 +34,11 @@ interface UserContext {
   timestamp: string;
 }
 
+interface Messages {
+  system: string;
+  user: string;
+}
+
 const CONTEXT_FILE = "user-context.json";
 const CONTEXT_MAX_AGE_MINUTES = 10;
 
@@ -66,6 +71,10 @@ async function main() {
         type: "string",
         multiple: true,
       },
+      preview: {
+        type: "boolean",
+        default: false,
+      },
     },
   });
 
@@ -82,7 +91,12 @@ async function main() {
   } else if (command === "context") {
     await handleContext(args.positionals.slice(1), args.values);
   } else {
-    await review(args.values);
+    const result = await review(args.values);
+    if (result.kind === "skipped" || result.kind === "no-changes" || result.kind === "preview-shown") {
+      process.exit(0);
+    } else if (result.kind === "review-done" && !result.pass) {
+      process.exit(1);
+    }
   }
 }
 
@@ -141,20 +155,34 @@ async function init(args: { force: boolean }) {
   console.log(chalk.yellow(`to your precommit hook`));
 }
 
-async function review(args: { objective?: string; "sandbox-only": boolean; "project-context"?: string[] }) {
+async function review(args: {
+  objective?: string;
+  "sandbox-only": boolean;
+  "project-context"?: string[];
+  preview?: boolean;
+}): Promise<
+  { kind: "skipped" } | { kind: "no-changes" } | { kind: "preview-shown" } | { kind: "review-done"; pass: boolean }
+> {
   if (args["sandbox-only"] && !fs.existsSync(`/.agent-sandbox`)) {
     console.log(chalk.yellow(`Skipping agent-precommit review because /.agent-sandbox doesn't exist`));
-    return;
+    return { kind: "skipped" };
   }
 
   const [gitStatus, diff] = await getGitContext();
 
   if (!diff.trim()) {
     console.log("No changes to review");
-    process.exit(0);
+    return { kind: "no-changes" };
   }
 
   const projectContext = await getProjectContext(args["project-context"]);
+
+  // Handle preview mode
+  if (args.preview) {
+    await showPreview(args.objective, gitStatus, diff, projectContext);
+    return { kind: "preview-shown" };
+  }
+
   const result = await spinner(chalk.blue(`Requesting review...`), () =>
     requestReview(args.objective, gitStatus, diff, projectContext),
   );
@@ -179,12 +207,58 @@ your changes.`,
     );
   }
 
-  if (!result.pass) {
-    process.exitCode = 1;
-  } else {
+  if (result.pass) {
     // Clear user context after successful review to prevent staleness
     await clearUserContext();
   }
+
+  return { kind: "review-done", pass: result.pass };
+}
+
+/**
+ * Build the messages that will be sent to the model provider API
+ */
+async function buildMessages(
+  objective: string | undefined,
+  gitStatus: string,
+  diff: string,
+  projectContext?: string,
+): Promise<Messages> {
+  const systemPrompt = await getSystemPrompt(projectContext);
+
+  const userMessage = `${objective ? `OBJECTIVE:\n${objective}\n\n` : ""}GIT STATUS:
+${gitStatus}
+
+DIFF TO REVIEW:
+${diff}
+
+Review this diff, and be uncompromising about quality standards.`;
+
+  return { system: systemPrompt, user: userMessage };
+}
+
+/**
+ * Display a preview of what would be sent to the model provider API
+ */
+async function showPreview(
+  objective: string | undefined,
+  gitStatus: string,
+  diff: string,
+  projectContext?: string,
+): Promise<void> {
+  console.log(chalk.blue("=== PREVIEW MODE ==="));
+  console.log(chalk.gray("The following messages would be sent to the model provider API:\n"));
+
+  const messages = await buildMessages(objective, gitStatus, diff, projectContext);
+
+  console.log(chalk.cyan("=== SYSTEM MESSAGE ==="));
+  console.log(messages.system);
+
+  console.log(chalk.cyan("\n=== USER MESSAGE ==="));
+  console.log(messages.user);
+
+  console.log(chalk.gray("\n=== END PREVIEW ==="));
+  console.log(chalk.gray("No API call was made. Exit code: 0"));
 }
 
 /**
@@ -231,21 +305,32 @@ async function getProjectContext(globs?: string[]): Promise<string> {
 
   let totalBytes = 0;
   const contextSections: string[] = [];
+  const omittedFiles: string[] = [];
 
   for (const filePath of contextFiles) {
     try {
       const fullPath = path.join(rootPath, filePath);
       const content = await fs.promises.readFile(fullPath, "utf8");
       const section = `## ${filePath}\n\n\`\`\`\n${content}\n\`\`\``;
+      const sectionBytes = Buffer.byteLength(section, "utf8");
 
-      if (totalBytes + section.length > MAX_CONTEXT_BYTES) {
-        contextSections.push(`## ${filePath}\n\n\`\`\`\n[TRUNCATED: File too large for context]\n\`\`\``);
-        console.warn(chalk.yellow(`Warning: Context truncated - ${filePath} too large`));
-        break;
+      if (totalBytes + sectionBytes > MAX_CONTEXT_BYTES) {
+        // Skip this file and add a placeholder
+        const placeholder = `## ${filePath}\n\n\`\`\`\n[OMITTED: Including this file would exceed the context byte limit]\n\`\`\``;
+        const placeholderBytes = Buffer.byteLength(placeholder, "utf8");
+
+        // Only add placeholder if it fits
+        if (totalBytes + placeholderBytes <= MAX_CONTEXT_BYTES) {
+          contextSections.push(placeholder);
+          totalBytes += placeholderBytes;
+        }
+        omittedFiles.push(filePath);
+        // Continue to try other files that might fit
+        continue;
       }
 
       contextSections.push(section);
-      totalBytes += section.length;
+      totalBytes += sectionBytes;
     } catch (error: unknown) {
       if (
         !(typeof error === "object" && error && "code" in error) ||
@@ -260,7 +345,15 @@ async function getProjectContext(globs?: string[]): Promise<string> {
     return "";
   }
 
-  return `CODEBASE CONTEXT:\n\n${contextSections.join("\n\n")}\n\n`;
+  let result = `CODEBASE CONTEXT:\n\n${contextSections.join("\n\n")}`;
+
+  if (omittedFiles.length > 0) {
+    result += `\n\n[NOTE: The following files were omitted because including them would exceed the ${MAX_CONTEXT_BYTES} byte context limit: ${omittedFiles.join(", ")}]`;
+  }
+
+  result += "\n\n";
+
+  return result;
 }
 
 async function handleContext(args: string[], options: { clear?: boolean; show?: boolean }): Promise<void> {
@@ -393,16 +486,7 @@ async function requestReview(
     baseURL,
   });
 
-  const developerMessage = await getSystemPrompt(projectContext);
-
-  const userMessage = `${objective ? `OBJECTIVE:\n${objective}\n\n` : ""}
-GIT STATUS:
-${gitStatus}
-
-DIFF TO REVIEW:
-${diff}
-
-Review this diff, and be uncompromising about quality standards.`;
+  const messages = await buildMessages(objective, gitStatus, diff, projectContext);
 
   const tools: OpenAI.ChatCompletionTool[] = [
     {
@@ -441,8 +525,8 @@ Review this diff, and be uncompromising about quality standards.`;
   const response = await openai.chat.completions.create({
     model,
     messages: [
-      { role: "developer", content: developerMessage },
-      { role: "user", content: userMessage },
+      { role: "developer", content: messages.system },
+      { role: "user", content: messages.user },
     ],
     temperature: 1,
     tools,
