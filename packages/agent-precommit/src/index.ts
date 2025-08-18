@@ -90,6 +90,15 @@ async function main() {
     await init({ force: args.values.force });
   } else if (command === "context") {
     await handleContext(args.positionals.slice(1), args.values);
+  } else if (command === "show-review") {
+    try {
+      await showReview(args.positionals[1]);
+      process.exit(0);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error(chalk.red(errorMessage));
+      process.exit(1);
+    }
   } else {
     const result = await review(args.values);
     if (result.kind === "skipped" || result.kind === "no-changes" || result.kind === "preview-shown") {
@@ -189,23 +198,17 @@ async function review(args: {
 
   // Get user context for saving in review data
   const userContext = await getUserContext();
-  await saveReview(args.objective, gitStatus, diff, result, userContext?.message, projectContext);
-
-  if (result.feedback.trim()) {
-    console.log(result.pass ? chalk.green(`✓ ${result.feedback}`) : chalk.red(`✗ ${result.feedback}`));
-  } else {
-    console.log(result.pass ? chalk.green("✓ PASSED") : chalk.red("✗ FAILED"));
-  }
-
-  if (!result.pass) {
-    console.log(
-      `\nPlease address any valid points in the feedback above.
-
-If you feel the reviewer might be missing important context, you can ask the human user
-to provide additional context with "agent-precommit context <message>" and then resubmit
-your changes.`,
-    );
-  }
+  const reviewData: ReviewData = {
+    timestamp: new Date().toISOString(),
+    objective: args.objective,
+    userContext: userContext?.message,
+    projectContext,
+    gitStatus,
+    gitDiff: diff,
+    review: result,
+  };
+  await saveReview(reviewData);
+  renderReview(reviewData);
 
   if (result.pass) {
     // Clear user context after successful review to prevent staleness
@@ -555,34 +558,161 @@ async function requestReview(
   return parsed;
 }
 
-async function saveReview(
-  objective: string | undefined,
-  gitStatus: string,
-  diff: string,
-  result: ReviewResult,
-  userContext?: string,
-  projectContext?: string,
-): Promise<void> {
+async function saveReview(reviewData: ReviewData): Promise<void> {
   const reviewsDir = path.join(await getDataDir(), "reviews");
   if (!fs.existsSync(reviewsDir)) {
     fs.mkdirSync(reviewsDir, { recursive: true });
   }
-
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, -5);
   const filename = `review_${timestamp}.json`;
-
-  const reviewData: ReviewData = {
-    timestamp: new Date().toISOString(),
-    objective,
-    userContext,
-    projectContext,
-    gitStatus,
-    gitDiff: diff,
-    review: result,
-  };
-
   const reviewFile = path.join(reviewsDir, filename);
   fs.writeFileSync(reviewFile, JSON.stringify(reviewData, null, 2));
+}
+
+function isValidReviewData(data: unknown): data is ReviewData {
+  if (!data || typeof data !== "object") return false;
+  const d = data as Record<string, unknown>;
+
+  // Check required fields
+  if (typeof d.timestamp !== "string") return false;
+  // Validate strict ISO 8601 timestamp format
+  const iso8601Regex = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?Z?$/;
+  if (!iso8601Regex.test(d.timestamp) || new Date(d.timestamp).toString() === "Invalid Date") return false;
+  if (typeof d.gitStatus !== "string") return false;
+  if (typeof d.gitDiff !== "string") return false;
+
+  // Check optional fields
+  if (d.objective !== undefined && typeof d.objective !== "string") return false;
+  if (d.userContext !== undefined && typeof d.userContext !== "string") return false;
+  if (d.projectContext !== undefined && typeof d.projectContext !== "string") return false;
+
+  // Check review object
+  if (!d.review || typeof d.review !== "object") return false;
+  const review = d.review as Record<string, unknown>;
+  if (typeof review.pass !== "boolean") return false;
+  if (typeof review.feedback !== "string") return false;
+
+  return true;
+}
+
+async function pathExists(filePath: string): Promise<boolean> {
+  return fs.promises
+    .access(filePath)
+    .then(() => true)
+    .catch(() => false);
+}
+
+async function resolveLatestReviewFile(reviewsDir: string): Promise<string> {
+  const dirEntries = await fs.promises.readdir(reviewsDir, { withFileTypes: true });
+  const reviewFiles = dirEntries
+    .filter((entry) => entry.isFile() && entry.name.match(/^review_.*\.json$/))
+    .map((entry) => entry.name);
+
+  if (reviewFiles.length === 0) {
+    throw new Error("No reviews found.");
+  }
+
+  // Read and validate all review files, collecting valid ones with their timestamps
+  const validReviews: Array<{ filename: string; timestamp: Date }> = [];
+
+  for (const file of reviewFiles) {
+    try {
+      const filePath = path.join(reviewsDir, file);
+      const content = await fs.promises.readFile(filePath, "utf8");
+      const data = JSON.parse(content);
+
+      if (isValidReviewData(data)) {
+        validReviews.push({
+          filename: file,
+          timestamp: new Date(data.timestamp),
+        });
+      } else {
+        console.warn(chalk.yellow(`Warning: Skipping invalid review file: ${file}`));
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.warn(chalk.yellow(`Warning: Skipping unreadable review file ${file}: ${errorMessage}`));
+    }
+  }
+
+  if (validReviews.length === 0) {
+    throw new Error("No valid reviews found.");
+  }
+
+  // Sort by timestamp and get the latest
+  validReviews.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+  return path.join(reviewsDir, validReviews[validReviews.length - 1].filename);
+}
+
+async function readAndValidateReview(reviewFile: string): Promise<ReviewData> {
+  const content = await fs.promises.readFile(reviewFile, "utf8");
+  const rawData = JSON.parse(content);
+
+  if (!isValidReviewData(rawData)) {
+    throw new Error("Invalid review file format. The file may be corrupted or from an incompatible version.");
+  }
+
+  return rawData;
+}
+
+function renderReview(reviewData: ReviewData): void {
+  const feedback = reviewData.review.feedback || "";
+  if (reviewData.review.pass) {
+    console.log(chalk.green(`✓ PASSED`));
+  } else {
+    console.log(chalk.red("✗ FAILED"));
+  }
+
+  if (feedback.trim()) {
+    console.log(chalk.blue(`=== FEEDBACK ===`));
+    console.log(feedback);
+  }
+
+  console.log(
+    `\nPlease address any valid points in the feedback above.
+
+If you feel the reviewer might be missing important context, you can ask the human user
+to provide additional context with "agent-precommit context <message>" and then resubmit
+your changes.`,
+  );
+}
+
+async function showReview(filename?: string): Promise<void> {
+  const reviewsDir = path.join(await getDataDir(), "reviews");
+
+  if (!(await pathExists(reviewsDir))) {
+    console.log(chalk.yellow("No reviews found. The reviews directory does not exist."));
+    return;
+  }
+
+  let reviewFile: string;
+  let reviewFilename: string;
+
+  if (filename) {
+    if (path.basename(filename) !== filename) {
+      reviewFile = path.resolve(filename);
+      if (!reviewFile.startsWith(reviewsDir)) {
+        throw new Error("Invalid filename. Path traversal not allowed.");
+      }
+    } else {
+      reviewFile = path.join(reviewsDir, filename);
+    }
+
+    reviewFilename = path.basename(reviewFile);
+
+    if (!(await pathExists(reviewFile))) {
+      throw new Error(`Review file "${filename}" not found.`);
+    }
+  } else {
+    // Show the last review
+    reviewFile = await resolveLatestReviewFile(reviewsDir);
+    reviewFilename = path.basename(reviewFile);
+  }
+
+  const reviewData = await readAndValidateReview(reviewFile);
+  console.error(chalk.gray(`File: ${reviewFilename}`));
+  console.error(chalk.gray(`Timestamp: ${reviewData.timestamp}`));
+  renderReview(reviewData);
 }
 
 main().catch((error) => {

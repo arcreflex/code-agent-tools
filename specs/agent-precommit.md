@@ -21,6 +21,11 @@ Agent-precommit provides AI-powered code review for git commits, ensuring code q
   - Does not require API credentials or model configuration to run
   - Useful for verifying configuration and understanding the review context
   - Exits with code 0 after displaying the preview
+- **Show Review**: `agent-precommit show-review [filename]`
+  - Shows the last review if no filename is provided
+  - Shows a specific review if a filename is provided
+  - Displays the review feedback and pass/fail status
+  - Shows the timestamp and objective of the review
 - **Sandbox-Only Mode**: `agent-precommit --sandbox-only`
   - Only runs when inside agent-sandbox environment
   - Exits 0 when not in sandbox
@@ -196,6 +201,34 @@ agent-precommit --preview -m "Implementing dark mode feature"
 - No review history is saved
 - Always exits with code 0 after displaying the preview (unless an unhandled error occurs, which returns code 2)
 - If no staged changes exist, shows a message and exits with code 0
+
+## Show Review Command
+
+The `show-review` command displays saved review history from the `.agent-precommit/reviews/` directory.
+
+### Usage
+
+```bash
+# Show the last review
+agent-precommit show-review
+
+# Show a specific review by filename
+agent-precommit show-review review_2024-01-15T10-30-00.000Z.json
+```
+
+### Output Format
+
+The command displays:
+- Review timestamp
+- Objective (if provided during review)
+- Pass/fail status with appropriate color coding
+- Review feedback message
+
+### Error Handling
+
+- If no reviews exist, displays an appropriate message
+- If specified review file not found, shows error message
+- Validates review file format before display
 
 ## Output Format
 
