@@ -77,6 +77,9 @@ RUN npm install -g @playwright/mcp@latest
 # Add freeclaude alias
 RUN echo "alias freeclaude='claude --dangerously-skip-permissions'" >> /home/node/.bashrc
 
+# Add freecodex alias (analagous to freeclaude)
+RUN echo "alias freecodex='codex --sandbox=danger-full-access'" >> /home/node/.bashrc
+
 # Copy and set up security scripts
 COPY ./init-firewall.sh ./git-wrapper.sh ./entrypoint.sh /usr/local/bin/
 

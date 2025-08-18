@@ -148,6 +148,12 @@ async function buildBase(args: {
   console.log(chalk.gray(`Codex version: ${args.codexVersion}`));
   console.log(chalk.gray(`Git Delta version: ${args.gitDeltaVersion}`));
 
+  // If claude code or codex version is "latest", force the build to ensure we get the latest versions
+  if (args.claudeCodeVersion === "latest" || args.codexVersion === "latest") {
+    console.log(chalk.yellow("Using 'latest' version for Claude Code or Codex, forcing rebuild"));
+    buildArgs.push("--no-cache");
+  }
+
   const contextPath = path.dirname(baseDockerfilePath);
   await $`docker build -t ${imageName} ${buildArgs} -f ${baseDockerfilePath} ${contextPath}`;
 
