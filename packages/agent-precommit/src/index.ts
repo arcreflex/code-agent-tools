@@ -40,7 +40,6 @@ interface Messages {
 }
 
 const CONTEXT_FILE = "user-context.json";
-const CONTEXT_MAX_AGE_MINUTES = 10;
 
 async function main() {
   const args = parseArgs({
@@ -209,11 +208,6 @@ async function review(args: {
   };
   await saveReview(reviewData);
   renderReview(reviewData);
-
-  if (result.pass) {
-    // Clear user context after successful review to prevent staleness
-    await clearUserContext();
-  }
 
   return { kind: "review-done", pass: result.pass };
 }
@@ -430,15 +424,6 @@ async function getUserContext(): Promise<UserContext | null> {
   try {
     const content = fs.readFileSync(contextPath, "utf8");
     const context: UserContext = JSON.parse(content);
-
-    const age = Date.now() - new Date(context.timestamp).getTime();
-    const maxAge = CONTEXT_MAX_AGE_MINUTES * 60 * 1000;
-
-    if (age > maxAge) {
-      await clearUserContext();
-      return null;
-    }
-
     return context;
   } catch {
     console.error(chalk.yellow("Warning: Failed to read user context"));
@@ -465,7 +450,7 @@ async function getSystemPrompt(projectContext?: string): Promise<string> {
 
   const userContext = await getUserContext();
   if (userContext) {
-    prompt += `CONTEXT PROVIDED BY PROJECT OWNER (AUTHORITATIVE):\n${userContext.message}\n\n`;
+    prompt += `\n\nCONTEXT PROVIDED BY PROJECT OWNER (AUTHORITATIVE):\n${userContext.message}\n\n`;
   }
 
   return prompt;
