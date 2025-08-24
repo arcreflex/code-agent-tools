@@ -9,6 +9,12 @@ if [[ "$*" =~ commit.*(--no-verify|-n([[:space:]]|$)) ]]; then
     exit 1
 fi
 
+# Also check for HUSKY=0
+if [[ "$HUSKY" == "0" ]]; then
+    echo "Error: HUSKY=0 is not allowed. If you are blocked on a precommit check, please escalate to the user for guidance." >&2
+    exit 1
+fi
+
 if [[ "$*" =~ push.*(--force|--force-with-lease) ]]; then
     echo "Error: Force pushes are not allowed. If you feel this is necessary, please escalate to the user for guidance." >&2
     exit 1
