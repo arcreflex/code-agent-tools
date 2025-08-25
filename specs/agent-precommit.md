@@ -35,10 +35,11 @@ Agent-precommit provides AI-powered code review for git commits, ensuring code q
 1. **Environment Detection**: Checks for sandbox environment if `--sandbox-only`
 2. **Context Loading**: Loads project context (from `--project-context` globs) and user context (from `.agent-precommit/user-context.json`)
 3. **Git Status Collection**: Gathers staged changes via `git diff --cached`
-4. **Preview Check**: If `--preview` flag is set, displays formatted prompt and exits (skips steps 5-7)
-5. **AI Review**: Sends to model provider API with system prompt, context, and diff
-6. **Result Processing**: Structured output via function calling
-7. **History Logging**: Saves review to audit trail (skipped in preview mode)
+4. **Preview Check**: If `--preview` flag is set, displays formatted prompt and exits (skips steps 5-8)
+5. **Request Summary**: Displays formatted summary of review configuration (objective, model, context files, user context) with timing note
+6. **AI Review**: Sends to model provider API with system prompt, context, and diff
+7. **Result Processing**: Structured output via function calling
+8. **History Logging**: Saves review to audit trail including raw request/response for debugging
 
 ## Project Context
 
@@ -110,7 +111,7 @@ The user context is stored in a JSON file at `.agent-precommit/user-context.json
 All reviews saved to `.agent-precommit/reviews/` directory:
 
 - Filename format: `review_{ISO 8601 timestamp}.json`
-- Complete review metadata
+- Complete review metadata including raw API request/response for debugging
 - Structured JSON format
 
 ### Review Record Structure
@@ -126,7 +127,9 @@ All reviews saved to `.agent-precommit/reviews/` directory:
   "review": {
     "feedback": "Review feedback message",
     "pass": true | false
-  }
+  },
+  "rawRequest": "Complete API request payload sent to model provider (for debugging)",
+  "rawResponse": "Complete API response received from model provider (for debugging)"
 }
 ```
 
@@ -219,6 +222,7 @@ agent-precommit show-review review_2024-01-15T10-30-00.000Z.json
 ### Output Format
 
 The command displays:
+
 - Review timestamp
 - Objective (if provided during review)
 - Pass/fail status with appropriate color coding
@@ -249,6 +253,18 @@ Feedback guidelines:
 - **For FAIL**: Direct actionable advice with prodding language to fix issues
 
 ### Console Output
+
+### Request Summary
+
+Before starting the review, displays a formatted summary including:
+
+- Review objective (if provided)
+- Model being used
+- Project context files included (with count)
+- User context preview (if set)
+- Timing note about potential review duration (2-3 minutes)
+
+### Review Results
 
 - **Approved**: Green checkmark (✓) with feedback message
 - **Rejected**: Red X (✗) with feedback message

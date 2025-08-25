@@ -27,6 +27,8 @@ interface ReviewData {
   gitStatus: string;
   gitDiff: string;
   review: ReviewResult;
+  rawRequest?: unknown;
+  rawResponse?: unknown;
 }
 
 interface UserContext {
@@ -185,15 +187,18 @@ async function review(args: {
 
   const projectContext = await getProjectContext(args["project-context"]);
 
+  const messages = await buildMessages(args.objective, gitStatus, diff, projectContext.formattedContents);
+
   // Handle preview mode
   if (args.preview) {
-    await showPreview(args.objective, gitStatus, diff, projectContext);
+    await showPreview(messages);
     return { kind: "preview-shown" };
   }
 
-  const result = await spinner(chalk.blue(`Requesting review...`), () =>
-    requestReview(args.objective, gitStatus, diff, projectContext),
-  );
+  // Print request summary
+  await printRequestSummary(args.objective, projectContext);
+
+  const reviewResponse = await spinner(() => requestReview(messages));
 
   // Get user context for saving in review data
   const userContext = await getUserContext();
@@ -201,15 +206,17 @@ async function review(args: {
     timestamp: new Date().toISOString(),
     objective: args.objective,
     userContext: userContext?.message,
-    projectContext,
+    projectContext: projectContext.formattedContents,
     gitStatus,
     gitDiff: diff,
-    review: result,
+    review: reviewResponse.result,
+    rawRequest: reviewResponse.rawRequest,
+    rawResponse: reviewResponse.rawResponse,
   };
   await saveReview(reviewData);
   renderReview(reviewData);
 
-  return { kind: "review-done", pass: result.pass };
+  return { kind: "review-done", pass: reviewResponse.result.pass };
 }
 
 /**
@@ -219,7 +226,7 @@ async function buildMessages(
   objective: string | undefined,
   gitStatus: string,
   diff: string,
-  projectContext?: string,
+  projectContext: string,
 ): Promise<Messages> {
   const systemPrompt = await getSystemPrompt(projectContext);
 
@@ -235,18 +242,45 @@ Review this diff, and be uncompromising about quality standards.`;
 }
 
 /**
+ * Print a summary of the request configuration before starting the review
+ */
+async function printRequestSummary(
+  objective: string | undefined,
+  projectContext: { contextFiles: string[]; formattedContents: string },
+): Promise<void> {
+  const userContext = await getUserContext();
+  const model = process.env.AGENT_PRECOMMIT_MODEL;
+
+  console.log(chalk.cyan("\n\nRequesting review of staged changes"));
+
+  if (objective) {
+    console.log(chalk.cyan(`Objective: `) + objective);
+  }
+
+  if (model) {
+    console.log(chalk.cyan(`Model: `) + model);
+  }
+
+  if (projectContext.contextFiles.length > 0) {
+    console.log(
+      [chalk.cyan(`Context files included along with diff:`), ...projectContext.contextFiles].join(`\n    - `),
+    );
+  }
+
+  if (userContext) {
+    console.log(chalk.cyan(`User context:`));
+    console.log(userContext.message);
+  }
+
+  console.log(chalk.yellow("\n⏳ Note: Depending on the model, reviews can take 3+ minutes\n\n"));
+}
+
+/**
  * Display a preview of what would be sent to the model provider API
  */
-async function showPreview(
-  objective: string | undefined,
-  gitStatus: string,
-  diff: string,
-  projectContext?: string,
-): Promise<void> {
+async function showPreview(messages: Messages): Promise<void> {
   console.log(chalk.blue("=== PREVIEW MODE ==="));
   console.log(chalk.gray("The following messages would be sent to the model provider API:\n"));
-
-  const messages = await buildMessages(objective, gitStatus, diff, projectContext);
 
   console.log(chalk.cyan("=== SYSTEM MESSAGE ==="));
   console.log(messages.system);
@@ -272,9 +306,15 @@ async function getDataDir(): Promise<string> {
   return path.join(repoRoot.stdout.trim(), ".agent-precommit");
 }
 
-async function getProjectContext(globs?: string[]): Promise<string> {
+async function getProjectContext(globs?: string[]): Promise<{
+  contextFiles: string[];
+  formattedContents: string;
+}> {
   if (!globs || globs.length === 0) {
-    return "";
+    return {
+      contextFiles: [],
+      formattedContents: "",
+    };
   }
 
   const repoRoot = await $`git rev-parse --show-toplevel`;
@@ -293,7 +333,10 @@ async function getProjectContext(globs?: string[]): Promise<string> {
   }
 
   if (contextFiles.length === 0) {
-    return "";
+    return {
+      contextFiles: [],
+      formattedContents: "",
+    };
   }
 
   const MAX_CONTEXT_BYTES = process.env.AGENT_PRECOMMIT_MAX_CONTEXT_BYTES
@@ -339,18 +382,24 @@ async function getProjectContext(globs?: string[]): Promise<string> {
   }
 
   if (contextSections.length === 0) {
-    return "";
+    return {
+      contextFiles: [],
+      formattedContents: "",
+    };
   }
 
-  let result = `CODEBASE CONTEXT:\n\n${contextSections.join("\n\n")}`;
+  let formattedContents = `CODEBASE CONTEXT:\n\n${contextSections.join("\n\n")}`;
 
   if (omittedFiles.length > 0) {
-    result += `\n\n[NOTE: The following files were omitted because including them would exceed the ${MAX_CONTEXT_BYTES} byte context limit: ${omittedFiles.join(", ")}]`;
+    formattedContents += `\n\n[NOTE: The following files were omitted because including them would exceed the ${MAX_CONTEXT_BYTES} byte context limit: ${omittedFiles.join(", ")}]`;
   }
 
-  result += "\n\n";
+  formattedContents += "\n\n";
 
-  return result;
+  return {
+    contextFiles,
+    formattedContents,
+  };
 }
 
 async function handleContext(args: string[], options: { clear?: boolean; show?: boolean }): Promise<void> {
@@ -440,11 +489,11 @@ async function clearUserContext(): Promise<void> {
   }
 }
 
-async function getSystemPrompt(projectContext?: string): Promise<string> {
+async function getSystemPrompt(projectContext: string): Promise<string> {
   const filepath = path.join(await getDataDir(), "system-prompt.md");
   let prompt = fs.readFileSync(filepath, "utf8");
 
-  if (projectContext && projectContext.trim()) {
+  if (projectContext.trim()) {
     prompt += `\n\n${projectContext}`;
   }
 
@@ -457,11 +506,8 @@ async function getSystemPrompt(projectContext?: string): Promise<string> {
 }
 
 async function requestReview(
-  objective: string | undefined,
-  gitStatus: string,
-  diff: string,
-  projectContext?: string,
-): Promise<ReviewResult> {
+  messages: Messages,
+): Promise<{ result: ReviewResult; rawRequest: unknown; rawResponse: unknown }> {
   const apiKey = process.env.AGENT_PRECOMMIT_OPENAI_KEY;
   if (!apiKey) {
     throw new Error("Error: AGENT_PRECOMMIT_OPENAI_KEY environment variable not set");
@@ -473,8 +519,6 @@ async function requestReview(
     apiKey,
     baseURL,
   });
-
-  const messages = await buildMessages(objective, gitStatus, diff, projectContext);
 
   const tools: OpenAI.ChatCompletionTool[] = [
     {
@@ -510,7 +554,7 @@ async function requestReview(
     ? JSON.parse(process.env.AGENT_PRECOMMIT_EXTRA_PARAMS)
     : {};
 
-  const response = await openai.chat.completions.create({
+  const requestPayload = {
     model,
     messages: [
       { role: "developer", content: messages.system },
@@ -524,7 +568,9 @@ async function requestReview(
     },
     max_completion_tokens: 10000,
     ...extraParams,
-  });
+  };
+
+  const response = await openai.chat.completions.create(requestPayload);
 
   const choice = response.choices[0];
   if (!choice) {
@@ -540,7 +586,11 @@ async function requestReview(
   const parsed = JSON.parse(toolCall.function.arguments);
   // The API already enforces the structure of the response, so we can safely assume
   // the parsed result matches the expected type.
-  return parsed;
+  return {
+    result: parsed,
+    rawRequest: requestPayload,
+    rawResponse: response,
+  };
 }
 
 async function saveReview(reviewData: ReviewData): Promise<void> {
