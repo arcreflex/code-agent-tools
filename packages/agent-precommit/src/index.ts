@@ -566,7 +566,7 @@ async function requestReview(
       type: "function",
       function: { name: "provide_review_feedback" },
     },
-    max_completion_tokens: 10000,
+    max_completion_tokens: 50000,
     ...extraParams,
   };
 
@@ -579,7 +579,7 @@ async function requestReview(
 
   const toolCall = choice.message?.tool_calls?.[0];
   if (toolCall?.type !== "function" || !toolCall.function.arguments) {
-    console.error(JSON.stringify(choice.message));
+    console.error(JSON.stringify(response));
     throw new Error("Error: OpenAI did not return expected function call response");
   }
 
