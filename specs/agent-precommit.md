@@ -8,9 +8,15 @@ Agent-precommit provides AI-powered code review for git commits, ensuring code q
 
 ### Command Interface
 
-- **Init**: `agent-precommit init`
+- **Init**: `agent-precommit init [--force]`
   - Initializes `.agent-precommit` config directory, copying from `packages/agent-precommit/template`
   - Adds `.agent-precommit/reviews` and `.agent-precommit/user-context.json` to `.gitignore`
+  - If directory already exists, shows error and suggests using `--force` flag
+  - With `--force` flag: Reinitializes while preserving:
+    - Existing `.env` file configuration
+    - Existing `user-context.json` file
+    - Existing `reviews/` directory with all review history
+  - Only updates template files (like `system-prompt.md`) to latest versions
 - **Basic Review**: `agent-precommit`
 - **Review with Objective**: `agent-precommit -m <message>` or `agent-precommit --objective <message>`
   - Provides context about the purpose of the changes being reviewed

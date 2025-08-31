@@ -112,20 +112,97 @@ async function main() {
 
 async function init(args: { force: boolean }) {
   const dataDir = await getDataDir();
+  let existingEnv: string | null = null;
+  let existingUserContext: string | null = null;
+  let hadExistingDir = false;
+
   if (fs.existsSync(dataDir)) {
+    hadExistingDir = true;
+
+    // Preserve existing .env file content if it exists
+    const envPath = path.join(dataDir, ".env");
+    if (fs.existsSync(envPath)) {
+      existingEnv = fs.readFileSync(envPath, "utf8");
+    }
+
+    // Preserve existing user-context.json if it exists
+    const userContextPath = path.join(dataDir, "user-context.json");
+    if (fs.existsSync(userContextPath)) {
+      existingUserContext = fs.readFileSync(userContextPath, "utf8");
+    }
+
     if (args.force) {
-      console.log(chalk.yellow("Force removing existing .agent-precommit directory"));
+      console.log(chalk.yellow("Force reinitializing .agent-precommit directory"));
+      console.log(chalk.gray("Preserving: .env, user-context.json, and reviews/"));
+
+      // Create temp directory to store preserved files
+      const tempDir = `${dataDir}.tmp`;
+      if (fs.existsSync(tempDir)) {
+        await $`rm -rf ${tempDir}`;
+      }
+      fs.mkdirSync(tempDir);
+
+      // Preserve reviews directory if it exists
+      const reviewsDir = path.join(dataDir, "reviews");
+      if (fs.existsSync(reviewsDir)) {
+        await $`cp -r ${reviewsDir} ${tempDir}/reviews`;
+      }
+
+      // Remove the old directory
       await $`rm -r ${dataDir}`;
+
+      // Create fresh directory
+      fs.mkdirSync(dataDir, { recursive: true });
+
+      // Restore reviews if they existed
+      if (fs.existsSync(path.join(tempDir, "reviews"))) {
+        await $`mv ${tempDir}/reviews ${dataDir}/reviews`;
+      }
+
+      // Clean up temp directory
+      await $`rm -rf ${tempDir}`;
     } else {
       console.error(`Error: ${dataDir} directory already exists.`);
-      console.error("Remove it first if you want to reinitialize.");
+      console.error("Use --force to reinitialize while preserving .env, user-context.json, and reviews.");
       process.exit(1);
+    }
+  } else {
+    fs.mkdirSync(dataDir, { recursive: true });
+  }
+
+  // Copy template files including dotfiles
+  const templateDir = path.join(__dirname, "..", "template");
+  await $`cp -RL ${templateDir}/. ${dataDir}/`;
+
+  // Handle .env file
+  const envPath = path.join(dataDir, ".env");
+  const examplePath = path.join(dataDir, ".env.example");
+
+  if (existingEnv) {
+    // Restore the preserved .env content
+    fs.writeFileSync(envPath, existingEnv);
+    console.log(chalk.green("✓ Preserved existing .env configuration"));
+
+    // Remove .env.example since we have a real .env
+    if (fs.existsSync(examplePath)) {
+      fs.unlinkSync(examplePath);
+    }
+  } else {
+    // Rename .env.example to .env for new installations
+    if (fs.existsSync(examplePath)) {
+      await $`mv ${examplePath} ${envPath}`;
+    } else {
+      console.error(chalk.red("Warning: No .env.example file found in template. Please configure .env manually."));
     }
   }
 
-  fs.mkdirSync(dataDir, { recursive: true });
-  await $`cp -RL ${path.join(__dirname, "..", "template")}/ ${dataDir}/`;
-  await $`mv ${dataDir}/.env.example ${dataDir}/.env`;
+  // Handle user-context.json
+  if (existingUserContext) {
+    const userContextPath = path.join(dataDir, "user-context.json");
+    fs.writeFileSync(userContextPath, existingUserContext);
+    console.log(chalk.green("✓ Preserved existing user context"));
+  }
+
   let repoRoot;
   try {
     repoRoot = await $`git rev-parse --show-toplevel`;
@@ -157,12 +234,23 @@ async function init(args: { force: boolean }) {
     console.log(chalk.yellow(`Added ${entriesToAdd.length} entries to .gitignore`));
   }
 
-  console.log(chalk.yellow(`Initialized agent-precommit in ${dataDir}`));
+  if (hadExistingDir && args.force) {
+    console.log(chalk.green(`✓ Reinitialized agent-precommit in ${dataDir}`));
+  } else {
+    console.log(chalk.green(`✓ Initialized agent-precommit in ${dataDir}`));
+  }
 
-  const command = process.argv.slice(0, process.argv.indexOf("init")).join(" ");
-  console.log(chalk.yellow(`Set environment variables in ${dataDir}/.env and add:`));
-  console.log(chalk.white(command));
-  console.log(chalk.yellow(`to your precommit hook`));
+  const initIndex = process.argv.indexOf("init");
+  const command = initIndex > 0 ? process.argv.slice(0, initIndex).join(" ") : "agent-precommit";
+
+  if (!existingEnv) {
+    console.log(chalk.yellow(`Set environment variables in ${dataDir}/.env and add:`));
+    console.log(chalk.white(command));
+    console.log(chalk.yellow(`to your precommit hook`));
+  } else {
+    console.log(chalk.gray(`Your existing .env configuration has been preserved.`));
+    console.log(chalk.gray(`Ensure ${command} is in your precommit hook.`));
+  }
 }
 
 async function review(args: {
