@@ -3,8 +3,12 @@ set -euo pipefail
 
 echo "Setting up sandbox environment..."
 
-# Run firewall initialization
-sudo /usr/local/bin/init-firewall.sh
+if [ "${SKIP_FIREWAL:-}" = "1" ]; then
+  echo "Skipping firewall setup as SKIP_FIREWALL is set."
+else
+  # Run firewall initialization
+  sudo /usr/local/bin/init-firewall.sh
+fi
 
 echo "Firewall setup complete."
 

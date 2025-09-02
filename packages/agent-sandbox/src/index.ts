@@ -80,6 +80,10 @@ async function main() {
   } else if (args.positionals[0] === "show-run") {
     const localWorkspaceFolder = args.positionals[1] || process.cwd();
     await showRun({ localWorkspaceFolder });
+  } else if (args.positionals[0] === "codex-import-auth") {
+    await codexImportAuth();
+  } else if (args.positionals[0] === "codex-logout") {
+    await codexLogout();
   } else {
     const localWorkspaceFolder = process.cwd();
     await shell({ localWorkspaceFolder, restart: !!args.values.build, build: !!args.values.build });
@@ -358,6 +362,50 @@ async function stop(args: { localWorkspaceFolder: string }) {
   await $`docker stop ${containerName}`.quiet();
   await $`docker rm ${containerName}`.quiet();
   console.log(`Container ${containerName} stopped and removed`);
+}
+
+async function codexImportAuth() {
+  const home = process.env.HOME || process.env.USERPROFILE;
+  if (!home) {
+    console.error("Unable to determine HOME directory on host.");
+    process.exit(1);
+  }
+
+  const hostCodexDir = path.join(home, ".codex");
+  if (!fs.existsSync(hostCodexDir)) {
+    console.error(`No host Codex directory found at ${hostCodexDir}`);
+    process.exit(1);
+  }
+
+  const authPath = path.join(hostCodexDir, "auth.json");
+  if (!fs.existsSync(authPath)) {
+    console.error(`No auth.json found at ${hostCodexDir}. Run \`codex login\` on the host first.`);
+    process.exit(1);
+  }
+
+  console.log(chalk.cyan("Importing host Codex auth into shared volume..."));
+  const baseImage = "agent-sandbox-base:latest";
+  const script = [
+    "cp -f /src/auth.json /dst/ 2>/dev/null || true",
+    "cp -f /src/profile.json /dst/ 2>/dev/null || true",
+    "echo 'Current files in shared volume:'",
+    "ls -la /dst",
+  ].join("; ");
+  const result =
+    await $`docker run --rm --entrypoint /bin/bash -v ${hostCodexDir}:/src:ro -v ${codexConfigVolume}:/dst ${baseImage} -lc ${script}`.quiet();
+
+  console.log(chalk.green("Codex auth import completed."));
+  process.stdout.write(result.stdout);
+}
+
+async function codexLogout() {
+  console.log(chalk.cyan("Removing local Codex credentials from shared volume..."));
+  const baseImage = "agent-sandbox-base:latest";
+  const script = "rm -f /dst/auth.json /dst/profile.json; echo 'Remaining files in shared volume:'; ls -la /dst";
+  const result =
+    await $`docker run --rm --entrypoint /bin/bash -v ${codexConfigVolume}:/dst ${baseImage} -lc ${script}`.quiet();
+  console.log(chalk.green("Local Codex credentials deleted from the volume."));
+  process.stdout.write(result.stdout);
 }
 
 main().catch((e) => {

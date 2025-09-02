@@ -193,6 +193,31 @@ Pre-installed globally in the base image:
 - **Claude Code**: Config at `/home/node/.claude`
 - **OpenAI Codex**: Config at `/home/node/.codex`
 
+## Codex auth (ChatGPT account)
+
+Codex uses a local OAuth callback on `http://localhost:1455/auth/callback` and stores credentials in `~/.codex/auth.json`. The sandbox persists these credentials in the shared Codex config volume so all sandboxes can reuse them.
+
+### Login on host and import
+
+```
+codex login           # on host once
+agent-sandbox codex-import-auth
+```
+
+Copies `~/.codex/auth.json` (and `profile.json` if present) from the host into the shared Codex volume.
+
+### Removing local credentials
+
+```
+agent-sandbox codex-logout
+```
+
+Deletes `auth.json` and `profile.json` from the shared Codex volume (does not revoke server-side tokens).
+
+### Firewall allowlist
+
+The base image firewall allows the required domains for Codex, including `api.openai.com`, `auth.openai.com`, and `chatgpt.com`.
+
 ### Custom Aliases
 
 - `freeclaude` - Run Claude Code without permission checks

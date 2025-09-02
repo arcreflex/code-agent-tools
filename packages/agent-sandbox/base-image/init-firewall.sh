@@ -68,24 +68,34 @@ for domain in \
     "registry.npmjs.org" \
     "openrouter.ai" \
     "api.openai.com" \
+    "auth.openai.com" \
+    "chatgpt.com" \
     "api.anthropic.com" \
     "sentry.io" \
     "statsig.anthropic.com" \
     "statsig.com"; do
     echo "Resolving $domain..."
-    ips=$(dig +short A "$domain")
+    # Get only IPv4 A records (dig may print a CNAME first even with +short A)
+    ips=$(dig +short A "$domain" | awk '/^([0-9]{1,3}\.){3}[0-9]{1,3}$/' | sort -u || true)
+
+    # Fallback: use getent if dig produced nothing (e.g., DNS quirk)
     if [ -z "$ips" ]; then
-        echo "ERROR: Failed to resolve $domain"
+        ips=$(getent ahostsv4 "$domain" | awk '{print $1}' | sort -u || true)
+    fi
+
+    if [ -z "$ips" ]; then
+        echo "ERROR: Failed to resolve any IPv4 A records for $domain"
         exit 1
     fi
-    
+
     while read -r ip; do
-        if [[ ! "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
-            echo "ERROR: Invalid IP from DNS for $domain: $ip"
-            exit 1
+        # Double-check IPv4 shape; skip (don’t fail) if anything odd sneaks in
+        if [[ ! "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+            echo "Skipping non-IPv4 token for $domain: $ip"
+            continue
         fi
         echo "Adding $ip for $domain"
-        ipset add allowed-domains "$ip"
+        ipset add allowed-domains "$ip" 2>/dev/null || true
     done < <(echo "$ips")
 done
 
