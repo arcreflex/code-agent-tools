@@ -90,7 +90,10 @@ RUN chmod +x /usr/local/bin/init-firewall.sh && \
   echo "node ALL=(root) NOPASSWD: /usr/local/bin/init-firewall.sh" > /etc/sudoers.d/node-firewall && \
   chmod 0440 /etc/sudoers.d/node-firewall && \
   # Install git wrapper by creating a symlink in /usr/local/bin (which comes before /usr/bin in PATH)
-  ln -sf /usr/local/bin/git-wrapper.sh /usr/local/bin/git
+  ln -sf /usr/local/bin/git-wrapper.sh /usr/local/bin/git && \
+  # Ensure login shells keep npm global bin on PATH
+  printf '%s\n' 'export PATH="/usr/local/share/npm-global/bin:$PATH"' > /etc/profile.d/npm-global.sh && \
+  chmod 0644 /etc/profile.d/npm-global.sh
 USER node
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
