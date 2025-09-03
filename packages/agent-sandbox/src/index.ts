@@ -130,6 +130,24 @@ async function buildBase(args: {
   codexVersion: string;
   gitDeltaVersion: string;
 }) {
+  // Resolve floating versions to concrete versions so Docker cache can be reused
+  async function resolveNpmVersion(pkg: string, requested: string): Promise<string> {
+    if (requested !== "latest") return requested;
+    try {
+      const result = await $`npm view ${pkg} version`.quiet();
+      const version = result.stdout.trim();
+      if (!version) throw new Error("empty version");
+      return version;
+    } catch {
+      console.log(
+        chalk.yellow(
+          `Warning: failed to resolve latest for ${pkg}. Falling back to 'latest' which may reduce cache reuse.`,
+        ),
+      );
+      return requested;
+    }
+  }
+
   const baseDockerfilePath = path.join(__dirname, "..", "base-image", "Dockerfile");
 
   if (!fs.existsSync(baseDockerfilePath)) {
@@ -139,24 +157,32 @@ async function buildBase(args: {
 
   const imageName = `agent-sandbox-base:${args.tag}`;
 
+  // Resolve any 'latest' tags to concrete versions
+  const resolvedClaude = await resolveNpmVersion("@anthropic-ai/claude-code", args.claudeCodeVersion);
+  const resolvedCodex = await resolveNpmVersion("@openai/codex", args.codexVersion);
+
   const buildArgValues = {
-    CLAUDE_CODE_VERSION: args.claudeCodeVersion,
-    CODEX_VERSION: args.codexVersion,
+    CLAUDE_CODE_VERSION: resolvedClaude,
+    CODEX_VERSION: resolvedCodex,
     GIT_DELTA_VERSION: args.gitDeltaVersion,
   };
 
   const buildArgs = Object.entries(buildArgValues).flatMap(([key, value]) => [`--build-arg`, `${key}=${value}`]);
 
   console.log(chalk.cyan(`Building base image: ${imageName}`));
-  console.log(chalk.gray(`Claude Code version: ${args.claudeCodeVersion}`));
-  console.log(chalk.gray(`Codex version: ${args.codexVersion}`));
+  console.log(
+    chalk.gray(
+      `Claude Code version: ${args.claudeCodeVersion}${
+        args.claudeCodeVersion === "latest" ? ` -> ${resolvedClaude}` : ""
+      }`,
+    ),
+  );
+  console.log(
+    chalk.gray(`Codex version: ${args.codexVersion}${args.codexVersion === "latest" ? ` -> ${resolvedCodex}` : ""}`),
+  );
   console.log(chalk.gray(`Git Delta version: ${args.gitDeltaVersion}`));
 
-  // If claude code or codex version is "latest", force the build to ensure we get the latest versions
-  if (args.claudeCodeVersion === "latest" || args.codexVersion === "latest") {
-    console.log(chalk.yellow("Using 'latest' version for Claude Code or Codex, forcing rebuild"));
-    buildArgs.push("--no-cache");
-  }
+  // No need to force --no-cache; resolved versions keep cache deterministic
 
   const contextPath = path.dirname(baseDockerfilePath);
   await $`docker build -t ${imageName} ${buildArgs} -f ${baseDockerfilePath} ${contextPath}`;

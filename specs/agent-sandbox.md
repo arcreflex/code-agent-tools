@@ -75,6 +75,7 @@ CLI support:
 - `build-base [--tag <tag>] [--claude-code-version <v>] [--codex-version <v>] [--git-delta-version <v>]`
   - Builds or rebuilds `agent-sandbox-base:<tag>` locally from `packages/agent-sandbox/base-image/Dockerfile`.
   - Defaults: `--tag latest` and tool versions defined by the base Dockerfile defaults.
+  - When a tool version is `latest`, the CLI resolves it to a concrete npm version before building to maximize Docker layer caching (no `--no-cache` used).
 
 - `build [path] [--base-tag <tag>]`
   - Builds the per-repo image in `.agent-sandbox/` and passes `--build-arg BASE_IMAGE_TAG=<tag>` to the Docker build.
