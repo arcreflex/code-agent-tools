@@ -44,6 +44,10 @@ async function main() {
         type: "string",
         default: "0.18.2",
       },
+      "ast-grep-version": {
+        type: "string",
+        default: "latest",
+      },
     },
   });
 
@@ -53,6 +57,7 @@ async function main() {
       claudeCodeVersion: args.values["claude-code-version"],
       codexVersion: args.values["codex-version"],
       gitDeltaVersion: args.values["git-delta-version"],
+      astGrepVersion: args.values["ast-grep-version"],
     });
   } else if (args.positionals[0] === "build") {
     const localWorkspaceFolder = args.positionals[1] || process.cwd();
@@ -129,6 +134,7 @@ async function buildBase(args: {
   claudeCodeVersion: string;
   codexVersion: string;
   gitDeltaVersion: string;
+  astGrepVersion: string;
 }) {
   // Resolve floating versions to concrete versions so Docker cache can be reused
   async function resolveNpmVersion(pkg: string, requested: string): Promise<string> {
@@ -160,11 +166,13 @@ async function buildBase(args: {
   // Resolve any 'latest' tags to concrete versions
   const resolvedClaude = await resolveNpmVersion("@anthropic-ai/claude-code", args.claudeCodeVersion);
   const resolvedCodex = await resolveNpmVersion("@openai/codex", args.codexVersion);
+  const resolvedAstGrep = await resolveNpmVersion("@ast-grep/cli", args.astGrepVersion);
 
   const buildArgValues = {
     CLAUDE_CODE_VERSION: resolvedClaude,
     CODEX_VERSION: resolvedCodex,
     GIT_DELTA_VERSION: args.gitDeltaVersion,
+    AST_GREP_VERSION: resolvedAstGrep,
   };
 
   const buildArgs = Object.entries(buildArgValues).flatMap(([key, value]) => [`--build-arg`, `${key}=${value}`]);
@@ -181,6 +189,11 @@ async function buildBase(args: {
     chalk.gray(`Codex version: ${args.codexVersion}${args.codexVersion === "latest" ? ` -> ${resolvedCodex}` : ""}`),
   );
   console.log(chalk.gray(`Git Delta version: ${args.gitDeltaVersion}`));
+  console.log(
+    chalk.gray(
+      `ast-grep version: ${args.astGrepVersion}${args.astGrepVersion === "latest" ? ` -> ${resolvedAstGrep}` : ""}`,
+    ),
+  );
 
   // No need to force --no-cache; resolved versions keep cache deterministic
 

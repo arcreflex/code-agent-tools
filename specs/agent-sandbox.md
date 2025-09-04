@@ -19,6 +19,7 @@ Agent-sandbox uses a two-layer image model:
   - Editors (`nano`, `vim`)
   - Network/security (`sudo`, `gnupg2`, `iptables`, `ipset`, `iproute2`, `dnsutils`)
   - AI CLIs (global): `@anthropic-ai/claude-code`, `@openai/codex`
+  - Code search/lint: `@ast-grep/cli` (ast-grep)
 - Non-root user (`node`) and shell environment setup (history, aliases, prompt, `ENTRYPOINT`).
 - Security scripts and wrappers copied into the image:
   - `init-firewall.sh` (iptables/ipset allowlist)
@@ -72,7 +73,7 @@ The `BASE_IMAGE_TAG` build arg selects the base tag; the CLI passes this during 
 
 CLI support:
 
-- `build-base [--tag <tag>] [--claude-code-version <v>] [--codex-version <v>] [--git-delta-version <v>]`
+- `build-base [--tag <tag>] [--claude-code-version <v>] [--codex-version <v>] [--git-delta-version <v>] [--ast-grep-version <v>]`
   - Builds or rebuilds `agent-sandbox-base:<tag>` locally from `packages/agent-sandbox/base-image/Dockerfile`.
   - Defaults: `--tag latest` and tool versions defined by the base Dockerfile defaults.
   - When a tool version is `latest`, the CLI resolves it to a concrete npm version before building to maximize Docker layer caching (no `--no-cache` used).
@@ -193,6 +194,7 @@ Pre-installed globally in the base image:
 
 - **Claude Code**: Config at `/home/node/.claude`
 - **OpenAI Codex**: Config at `/home/node/.codex`
+ - **ast-grep**: Installed as `ast-grep`/`sg` on PATH for structural search and rewrite
 
 ## Codex auth (ChatGPT account)
 

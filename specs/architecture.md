@@ -24,7 +24,7 @@ The monorepo uses npm workspaces with two main packages under `packages/`:
   - Base image built with `agent-sandbox build-base` command from `packages/agent-sandbox/base-image/Dockerfile`
   - Per-repo Dockerfiles should be minimal: `FROM agent-sandbox-base:${BASE_IMAGE_TAG}` plus only repo-specific additions. Workspace code is bind-mounted at runtime.
 - **Git Wrapper**: Custom git wrapper script prevents bypass attempts like `--no-verify`
-- **Preinstalled CLIs**: Containers include Claude Code and OpenAI Codex (installed globally). Their configs persist via named volumes mounted at `/home/node/.claude` and `/home/node/.codex`
+- **Preinstalled CLIs**: Containers include Claude Code, OpenAI Codex, and ast-grep (installed globally). Their configs persist via named volumes mounted at `/home/node/.claude` and `/home/node/.codex`
 - **Template Integrity**: Automated SHA256 checksum verification of sandbox templates during lint-staged
 
 ### Important Files

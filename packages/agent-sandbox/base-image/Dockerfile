@@ -4,6 +4,7 @@ FROM node:23
 ARG CLAUDE_CODE_VERSION=latest
 ARG CODEX_VERSION=latest
 ARG GIT_DELTA_VERSION=0.18.2
+ARG AST_GREP_VERSION=latest
 
 # Install basic development tools and iptables/ipset
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -73,6 +74,9 @@ RUN npm install -g opencode-ai@latest
 
 # Tools for AI agents
 RUN npm install -g @playwright/mcp@latest
+
+# Install code-aware grep (ast-grep)
+RUN npm install -g @ast-grep/cli@${AST_GREP_VERSION}
 
 # Add freeclaude alias
 RUN echo "alias freeclaude='claude --dangerously-skip-permissions'" >> /home/node/.bashrc
