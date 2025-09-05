@@ -186,7 +186,7 @@ async function loadConfig(args: { localWorkspaceFolder: string }): Promise<Sandb
 
 async function containerExists(localWorkspaceFolder: string, branchSan?: string | null) {
   const containerName = getContainerName({ localWorkspaceFolder, branchSan });
-  const nameFilter = `^/${containerName}$`;
+  const nameFilter = `^/?${escapeRegex(containerName)}$`;
   const containerExists = await $`docker ps -q --filter name=${nameFilter}`.quiet();
   return !!containerExists.stdout.trim();
 }
@@ -700,8 +700,8 @@ async function ensureShelfAndWorktree(args: {
 }
 
 async function listContainers() {
-  const ps =
-    await $`docker ps --format {{.Names}}\t{{.Label \"workspace\"}}\t{{.Label \"branch\"}}\t{{.Label \"repoShelfVolume\"}}`.quiet();
+  const fmt = '{{.Names}}\t{{.Label "workspace"}}\t{{.Label "branch"}}\t{{.Label "repoShelfVolume"}}';
+  const ps = await $`docker ps --format ${fmt}`.quiet();
   const lines = ps.stdout.trim().split("\n").filter(Boolean);
   if (!lines.length) {
     console.log("No running agent-sandbox containers.");
@@ -711,7 +711,7 @@ async function listContainers() {
   for (const line of lines) {
     const [name, hostPath, , volumeLabel] = line.split("\t");
     if (!name || !hostPath) continue;
-    const inspect = await $`docker inspect -f {{.Config.WorkingDir}} ${name}`.quiet();
+    const inspect = await $`docker inspect -f ${"{{.Config.WorkingDir}}"} ${name}`.quiet();
     const workdir = inspect.stdout.trim();
     const mode = workdir.startsWith("/repo-shelf/worktrees/") ? "branch" : "bind";
     let volume = volumeLabel || "";
@@ -730,6 +730,10 @@ async function listContainers() {
   for (const r of rows) {
     console.log([r.name, r.mode, r.workdir, r.volume, r.hostPath].join("\t"));
   }
+}
+
+function escapeRegex(input: string): string {
+  return input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 main().catch((e) => {
