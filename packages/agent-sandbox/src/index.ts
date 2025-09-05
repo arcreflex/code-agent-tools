@@ -672,7 +672,7 @@ async function ensureShelfAndWorktree(args: {
     "else",
     '  git -C /repo-shelf/repo worktree add -b "$BRANCH_NAME" "$BR_DIR" origin/main || true',
     "fi",
-  ].join("; ");
+  ].join("\n");
 
   const dockerArgs = [
     "run",
