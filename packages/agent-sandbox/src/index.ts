@@ -29,9 +29,6 @@ async function main() {
       branch: {
         type: "string",
       },
-      remote: {
-        type: "string",
-      },
       "base-tag": {
         type: "string",
         default: "latest",
@@ -88,7 +85,6 @@ async function main() {
       restart: true,
       build: !!args.values.build,
       branch: args.values.branch,
-      remoteOverride: args.values.remote,
       baseTag: args.values["base-tag"],
     });
   } else if (args.positionals[0] === "start") {
@@ -98,7 +94,6 @@ async function main() {
       restart: false,
       build: !!args.values.build,
       branch: args.values.branch,
-      remoteOverride: args.values.remote,
       baseTag: args.values["base-tag"],
     });
   } else if (args.positionals[0] === "stop") {
@@ -111,7 +106,6 @@ async function main() {
       restart: !!args.values.build,
       build: !!args.values.build,
       branch: args.values.branch,
-      remoteOverride: args.values.remote,
       baseTag: args.values["base-tag"],
     });
   } else if (args.positionals[0] === "show-run") {
@@ -119,13 +113,12 @@ async function main() {
     await showRun({
       localWorkspaceFolder,
       branch: args.values.branch,
-      remoteOverride: args.values.remote,
       baseTag: args.values["base-tag"],
     });
   } else if (args.positionals[0] === "checkout") {
     const branch = args.positionals[1];
     if (!branch) {
-      console.error("Usage: agent-sandbox checkout <branch> [--remote <url>] [--base-tag <tag>]");
+      console.error("Usage: agent-sandbox checkout <branch> [--base-tag <tag>]");
       process.exit(1);
     }
     const localWorkspaceFolder = process.cwd();
@@ -148,7 +141,6 @@ async function main() {
       restart: !!args.values.build,
       build: !!args.values.build,
       branch: args.values.branch,
-      remoteOverride: args.values.remote,
       baseTag: args.values["base-tag"],
     });
   }
@@ -347,7 +339,6 @@ function getHistoryVolumeName(args: { localWorkspaceFolder: string }) {
 async function getDockerRunArgs(args: {
   localWorkspaceFolder: string;
   branch?: string | null;
-  remoteOverride?: string | null;
   baseTag?: string | null;
 }) {
   const branch = args.branch || null;
@@ -417,7 +408,6 @@ async function start(args: {
   build: boolean;
   restart: boolean;
   branch?: string | null;
-  remoteOverride?: string | null;
   baseTag?: string | null;
 }) {
   const branchSan = args.branch ? sanitizeBranch(args.branch) : null;
@@ -448,7 +438,6 @@ async function start(args: {
   const { runArgs } = await getDockerRunArgs({
     localWorkspaceFolder: args.localWorkspaceFolder,
     branch: args.branch,
-    remoteOverride: args.remoteOverride,
     baseTag: args.baseTag,
   });
 
@@ -456,12 +445,7 @@ async function start(args: {
   console.log(`Started container: ${containerName}`);
 }
 
-async function showRun(args: {
-  localWorkspaceFolder: string;
-  branch?: string | null;
-  remoteOverride?: string | null;
-  baseTag?: string | null;
-}) {
+async function showRun(args: { localWorkspaceFolder: string; branch?: string | null; baseTag?: string | null }) {
   const image = getImageName({ localWorkspaceFolder: args.localWorkspaceFolder });
   const imageExists = await $`docker images -q ${image}`.quiet();
   if (!imageExists.stdout.trim()) {
@@ -472,7 +456,6 @@ async function showRun(args: {
   const { runArgs } = await getDockerRunArgs({
     localWorkspaceFolder: args.localWorkspaceFolder,
     branch: args.branch,
-    remoteOverride: args.remoteOverride,
     baseTag: args.baseTag,
   });
 
@@ -495,7 +478,6 @@ async function shell(args: {
   restart: boolean;
   build: boolean;
   branch?: string | null;
-  remoteOverride?: string | null;
   baseTag?: string | null;
 }) {
   const branchSan = args.branch ? sanitizeBranch(args.branch) : null;
