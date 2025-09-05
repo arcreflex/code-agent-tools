@@ -367,16 +367,15 @@ When `--branch <name>` is requested (or the provisioning helper is invoked), run
 
 #### New/updated flags
 - `--branch <name>`: switch to branch mode (provision if needed, set workdir to worktree)
-- `--remote <url>` (optional): override origin auto-detection; otherwise derive from host repo’s `remote.origin.url`.
 
 #### New/updated commands
-- `start [path] [--branch <name>] [--remote <url>] [--base-tag <tag>] [--build]`
+- `start [path] [--branch <name>] [--base-tag <tag>] [--build]`
   - Always mounts both repo-shelf and host bind.
   - Sets workdir based on branch flag.
   - If `--branch` is present: runs provisioning (idempotent) before start.
 - `shell [path] [--branch <name>] [--build]`
   - Same as `start` but then opens shell (existing behavior), using branch workdir if provided.
-- `checkout <branch> [--remote <url>] [--base-tag <tag>]`
+- `checkout <branch> [--base-tag <tag>]`
   - Provision repo-shelf + worktree only (no container start).
 - `list`
   - Show running containers with: repo, mode, workdir, and mapped volumes.
