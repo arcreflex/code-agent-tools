@@ -672,6 +672,14 @@ async function ensureShelfAndWorktree(args: {
     "else",
     '  git -C /repo-shelf/repo worktree add -b "$BRANCH_NAME" "$BR_DIR" origin/main || true',
     "fi",
+    "# ensure node user can write into the shelf for subsequent usage",
+    "NEED_CHOWN=0",
+    "sudo -u node test -w /repo-shelf/repo || NEED_CHOWN=1",
+    "sudo -u node test -w /repo-shelf/worktrees || NEED_CHOWN=1",
+    'if [ "$NEED_CHOWN" = "1" ]; then',
+    "  # Constrain ownership change to the volume and avoid following symlinks",
+    "  find /repo-shelf/repo /repo-shelf/worktrees -xdev -exec chown -h node:node {} +",
+    "fi",
   ].join("\n");
 
   const dockerArgs = [
@@ -679,6 +687,8 @@ async function ensureShelfAndWorktree(args: {
     "--rm",
     "--entrypoint",
     "/bin/bash",
+    "-u",
+    "0:0",
     "-e",
     `ORIGIN_URL=${args.originUrl}`,
     "-e",
