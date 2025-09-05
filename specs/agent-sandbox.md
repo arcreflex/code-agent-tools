@@ -388,9 +388,9 @@ When `--branch <name>` is requested (or the provisioning helper is invoked), run
 - No changes to firewall or git-wrapper semantics.
 
 ### Volume naming
-- **Repo-shelf**: one volume per upstream repo (not per sandbox).
-  - Name: `agent-sbx-repo-<repoIdHash>`
-  - `repoIdHash` = MD5 of `remote.origin.url` (stable across machines for the same upstream).
+- **Repo-shelf**: one volume per host repo path (not per sandbox).
+  - Name: `agent-sbx-repo-<pathHash>`
+  - `pathHash` = MD5 of the absolute host workspace path (stable per clone path on a given machine).
 - **History/config volumes**: unchanged (per current design).
 
 ### Container naming (branch mode)

@@ -38,7 +38,7 @@ The monorepo uses npm workspaces with two main packages under `packages/`:
 
 #### Dual-Mount, Branch-Aware Mode (agent-sandbox)
 - Every sandbox mounts:
-  - a shared **repo-shelf** Docker volume at `/repo-shelf` (one per upstream repo)
+  - a shared **repo-shelf** Docker volume at `/repo-shelf` (one per host repo clone path; named via MD5 of absolute path)
   - the **host bind** repo at `/workspace/<repoName>`
 - **Bind mode**: workdir is `/workspace/<repoName>`
 - **Branch mode** (`--branch`): workdir is `/repo-shelf/worktrees/<branchSan>`
