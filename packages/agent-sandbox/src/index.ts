@@ -129,9 +129,7 @@ async function main() {
       process.exit(1);
     }
     const localWorkspaceFolder = process.cwd();
-    const originUrl = await getOriginUrl(localWorkspaceFolder, args.values.remote);
     await ensureShelfAndWorktree({
-      originUrl,
       localWorkspaceFolder,
       branch,
       baseTag: args.values["base-tag"],
@@ -358,8 +356,7 @@ async function getDockerRunArgs(args: {
   const historyVolume = getHistoryVolumeName(args);
   const config = await loadConfig(args);
   const workspaceName = path.basename(args.localWorkspaceFolder);
-  const originUrl = await getOriginUrl(args.localWorkspaceFolder, args.remoteOverride || undefined);
-  const repoShelfVolume = getRepoShelfVolumeName(originUrl);
+  const repoShelfVolume = getRepoShelfVolumeNameFromPath(args.localWorkspaceFolder);
 
   const mounts = [
     `source=${historyVolume},target=/commandhistory,type=volume`,
@@ -425,9 +422,7 @@ async function start(args: {
 }) {
   const branchSan = args.branch ? sanitizeBranch(args.branch) : null;
   if (args.branch) {
-    const originUrl = await getOriginUrl(args.localWorkspaceFolder, args.remoteOverride || undefined);
     await ensureShelfAndWorktree({
-      originUrl,
       localWorkspaceFolder: args.localWorkspaceFolder,
       branch: args.branch,
       baseTag: args.baseTag || "latest",
@@ -631,30 +626,17 @@ function sanitizeBranch(name: string): string {
   return name.replace(/[\s/]+/g, "__");
 }
 
-async function getOriginUrl(localWorkspaceFolder: string, override?: string): Promise<string> {
-  if (override) return override;
-  const result = await $`git -C ${localWorkspaceFolder} config --get remote.origin.url`.quiet();
-  const url = result.stdout.trim();
-  if (!url) {
-    throw new Error(`Unable to determine remote.origin.url for ${localWorkspaceFolder}. Use --remote <url>.`);
-  }
-  return url;
-}
-
-function getRepoShelfVolumeName(originUrl: string): string {
-  const hash = crypto.createHash("md5").update(originUrl).digest("hex");
+// Repo-shelf volume naming: hash the absolute host path
+function getRepoShelfVolumeNameFromPath(localWorkspaceFolder: string): string {
+  const fullPath = path.resolve(localWorkspaceFolder);
+  const hash = crypto.createHash("md5").update(fullPath).digest("hex");
   return `agent-sbx-repo-${hash}`;
 }
 
-async function ensureShelfAndWorktree(args: {
-  originUrl: string;
-  localWorkspaceFolder: string;
-  branch: string;
-  baseTag?: string | null;
-}) {
+async function ensureShelfAndWorktree(args: { localWorkspaceFolder: string; branch: string; baseTag?: string | null }) {
   const repoName = path.basename(args.localWorkspaceFolder);
   const branchSan = sanitizeBranch(args.branch);
-  const repoShelfVolume = getRepoShelfVolumeName(args.originUrl);
+  const repoShelfVolume = getRepoShelfVolumeNameFromPath(args.localWorkspaceFolder);
   const baseImage = `agent-sandbox-base:${args.baseTag || "latest"}`;
 
   await $`docker volume create ${repoShelfVolume}`.quiet();
@@ -671,8 +653,8 @@ async function ensureShelfAndWorktree(args: {
     "if git -C /repo-shelf/repo rev-parse --verify --quiet refs/remotes/host/$BRANCH_NAME; then",
     '  git -C /repo-shelf/repo worktree add -B "$BRANCH_NAME" "$BR_DIR" "host/$BRANCH_NAME" || true',
     "else",
-    '  DEFAULT_BRANCH=$(git -C /workspace/$REPO_NAME symbolic-ref --short -q refs/remotes/origin/HEAD | sed "s#^origin/##" || true)',
-    '  [ -n "$DEFAULT_BRANCH" ] || DEFAULT_BRANCH=$(git -C /repo-shelf/repo symbolic-ref --short -q refs/remotes/host/HEAD | sed "s#^host/##" || true)',
+    '  DEFAULT_BRANCH=$(git -C /repo-shelf/repo symbolic-ref --short -q refs/remotes/host/HEAD | sed "s#^host/##" || true)',
+    '  [ -n "$DEFAULT_BRANCH" ] || DEFAULT_BRANCH=$(git -C /workspace/$REPO_NAME symbolic-ref --short -q refs/remotes/origin/HEAD | sed "s#^origin/##" || true)',
     '  [ -n "$DEFAULT_BRANCH" ] || DEFAULT_BRANCH=main',
     '  git -C /repo-shelf/repo worktree add -b "$BRANCH_NAME" "$BR_DIR" "host/$DEFAULT_BRANCH" || true',
     "fi",
@@ -730,12 +712,7 @@ async function listContainers() {
     const mode = workdir.startsWith("/repo-shelf/worktrees/") ? "branch" : "bind";
     let volume = volumeLabel || "";
     if (!volume) {
-      try {
-        const origin = await getOriginUrl(hostPath);
-        volume = getRepoShelfVolumeName(origin);
-      } catch {
-        volume = "?";
-      }
+      volume = getRepoShelfVolumeNameFromPath(hostPath);
     }
     rows.push({ name, mode, workdir, volume, hostPath });
   }
