@@ -308,7 +308,7 @@ Configuration stored in `.agent-sandbox/` directory:
 
 - Manual testing in sandbox environment
 - Verification of firewall rules
- - CLI functionality validation
+- CLI functionality validation
 
 ## Dual-Mount, Branch-Aware Mode
 
