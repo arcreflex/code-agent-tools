@@ -641,14 +641,9 @@ async function ensureShelfAndWorktree(args: { localWorkspaceFolder: string; bran
     '  git -C /repo-shelf/repo worktree add -b "$BRANCH_NAME" "$BR_DIR" "host/$DEFAULT_BRANCH" || true',
     "fi",
     'test -d "$BR_DIR" || { echo >&2 "Failed to create worktree at $BR_DIR"; exit 1; }',
-    "# ensure node user can write into the shelf for subsequent usage",
-    "NEED_CHOWN=0",
-    "su -s /bin/sh -c 'test -w /repo-shelf/repo' node || NEED_CHOWN=1",
-    "su -s /bin/sh -c 'test -w /repo-shelf/worktrees' node || NEED_CHOWN=1",
-    'if [ "$NEED_CHOWN" = "1" ]; then',
-    "  # Constrain ownership change to the volume and avoid following symlinks",
-    "  find /repo-shelf/repo /repo-shelf/worktrees -xdev -exec chown -h node:node {} +",
-    "fi",
+    "# Ensure consistent ownership to avoid Git 'dubious ownership' errors",
+    "# Constrain ownership change to the volume and avoid following symlinks",
+    "find /repo-shelf/repo /repo-shelf/worktrees -xdev -exec chown -h node:node {} +",
   ].join("\n");
 
   const dockerArgs = [
