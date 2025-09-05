@@ -196,18 +196,47 @@ Pre-installed globally in the base image:
 - **OpenAI Codex**: Config at `/home/node/.codex`
  - **ast-grep**: Installed as `ast-grep`/`sg` on PATH for structural search and rewrite
 
-## Codex auth (ChatGPT account)
+## Codex configuration and auth
 
-Codex uses a local OAuth callback on `http://localhost:1455/auth/callback` and stores credentials in `~/.codex/auth.json`. The sandbox persists these credentials in the shared Codex config volume so all sandboxes can reuse them.
+Codex uses a local OAuth callback on `http://localhost:1455/auth/callback` and stores credentials in `~/.codex/auth.json`. The sandbox persists these credentials and related configuration in a shared Codex config volume so all sandboxes can reuse them.
 
-### Login on host and import
+### Initialize Codex config (new)
 
 ```
-codex login           # on host once
-agent-sandbox codex-import-auth
+# Initialize shared Codex config in the sandbox volume
+agent-sandbox codex-init-config [--auth]
 ```
 
-Copies `~/.codex/auth.json` (and `profile.json` if present) from the host into the shared Codex volume.
+Behavior:
+
+- Initializes the shared Codex config volume (mounted at `/home/node/.codex`).
+- Ensures a `config.toml` exists with a "high" profile for GPT‑5 configured for high reasoning effort.
+- Creates or updates an `AGENTS.md` note inside the Codex config volume describing the containerized sandbox environment and installed tools.
+- With `--auth`, also imports host credentials (same behavior as the old `codex-import-auth`).
+
+Example `config.toml` profile created/ensured by this command:
+
+```
+[profiles.high]
+model = "gpt-5"
+# Constrains reasoning effort for reasoning-capable models
+reasoning_effort = "high"
+```
+
+AGENTS.md content (created/updated in the Codex config volume):
+
+- Purpose: You are running inside a containerized sandbox (agent-sandbox) designed to provide a safe, auditable coding environment with network/filesystem guardrails.
+- Persistence: Tool/config directories (e.g., `~/.codex`) are backed by a named Docker volume shared across repo sandboxes.
+- Installed tools: ast-grep (`ast-grep` / `sg`) for structural search and rewrites. Additional tools may be added over time.
+
+### Login on host and import auth
+
+```
+codex login              # on host once
+agent-sandbox codex-init-config --auth
+```
+
+Copies `~/.codex/auth.json` (and `profile.json` if present) from the host into the shared Codex volume in addition to initializing `config.toml` and `AGENTS.md`.
 
 ### Removing local credentials
 
