@@ -212,7 +212,8 @@ Behavior:
 - Initializes the shared Codex config volume (mounted at `/home/node/.codex`).
 - Ensures a `config.toml` exists with a "high" profile for GPT‑5 configured for high reasoning effort.
 - Creates or updates an `AGENTS.md` note inside the Codex config volume describing the containerized sandbox environment and installed tools.
-- With `--auth`, also imports host credentials (same behavior as the old `codex-import-auth`).
+- With `--auth`, imports host Codex credentials into the shared volume.
+- Idempotent by default: if `config.toml`, `AGENTS.md`, `auth.json`, or `profile.json` already exist in the volume, they are left as‑is and a message is printed. Use `--force` to overwrite these files.
 
 Example `config.toml` profile created/ensured by this command:
 
@@ -236,7 +237,7 @@ codex login              # on host once
 agent-sandbox codex-init-config --auth
 ```
 
-Copies `~/.codex/auth.json` (and `profile.json` if present) from the host into the shared Codex volume in addition to initializing `config.toml` and `AGENTS.md`.
+Copies `~/.codex/auth.json` (and `profile.json` if present) from the host into the shared Codex volume in addition to initializing `config.toml` and `AGENTS.md`. Use `--force` to overwrite existing files in the volume.
 
 ### Removing local credentials
 
