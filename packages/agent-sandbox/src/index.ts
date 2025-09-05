@@ -2,6 +2,7 @@ import path from "node:path";
 import { parseArgs } from "util";
 import { $, chalk } from "zx";
 import fs from "node:fs";
+import os from "node:os";
 import crypto from "node:crypto";
 
 interface SandboxConfig {
@@ -18,6 +19,10 @@ async function main() {
     allowPositionals: true,
     options: {
       force: {
+        type: "boolean",
+        default: false,
+      },
+      auth: {
         type: "boolean",
         default: false,
       },
@@ -85,8 +90,8 @@ async function main() {
   } else if (args.positionals[0] === "show-run") {
     const localWorkspaceFolder = args.positionals[1] || process.cwd();
     await showRun({ localWorkspaceFolder });
-  } else if (args.positionals[0] === "codex-import-auth") {
-    await codexImportAuth();
+  } else if (args.positionals[0] === "codex-init-config") {
+    await codexInitConfig({ auth: args.values.auth, force: args.values.force });
   } else if (args.positionals[0] === "codex-logout") {
     await codexLogout();
   } else {
@@ -403,38 +408,97 @@ async function stop(args: { localWorkspaceFolder: string }) {
   console.log(`Container ${containerName} stopped and removed`);
 }
 
-async function codexImportAuth() {
+async function codexInitConfig(args: { auth: boolean; force: boolean }) {
   const home = process.env.HOME || process.env.USERPROFILE;
   if (!home) {
     console.error("Unable to determine HOME directory on host.");
     process.exit(1);
   }
 
+  // Prepare template files for config.toml and AGENTS.md in a temp dir
+  const tmpBase = await fs.promises.mkdtemp(path.join(os.tmpdir(), "codex-init-"));
+  const templatesDir = path.join(tmpBase, "templates");
+  fs.mkdirSync(templatesDir, { recursive: true });
+
+  const configToml = ["[profiles.high]", 'model = "gpt-5"', 'model_reasoning_effort = "high"', ""].join("\n");
+
+  const agentsMd = `# Context for AI agents (sandbox)
+
+You are working within a containerized sandbox environment ("agent-sandbox"), intended to be a space where you can exercise autonomy more freely.
+
+## Installed Tools
+- git, node, npm
+- ast-grep: Structural search and rewrite tool. Available in the agent-sandbox base image as \`ast-grep\` (help: \`ast-grep --help\`, docs: https://ast-grep.github.io/llms.txt).
+`;
+
+  fs.writeFileSync(path.join(templatesDir, "config.toml"), configToml, "utf8");
+  fs.writeFileSync(path.join(templatesDir, "AGENTS.md"), agentsMd, "utf8");
+
+  // Optional host auth directory
   const hostCodexDir = path.join(home, ".codex");
-  if (!fs.existsSync(hostCodexDir)) {
-    console.error(`No host Codex directory found at ${hostCodexDir}`);
-    process.exit(1);
+  if (args.auth) {
+    if (!fs.existsSync(hostCodexDir)) {
+      console.error(`No host Codex directory found at ${hostCodexDir}`);
+      console.error("Run 'codex login' on the host first or omit --auth.");
+      process.exit(1);
+    }
   }
 
-  const authPath = path.join(hostCodexDir, "auth.json");
-  if (!fs.existsSync(authPath)) {
-    console.error(`No auth.json found at ${hostCodexDir}. Run \`codex login\` on the host first.`);
-    process.exit(1);
-  }
-
-  console.log(chalk.cyan("Importing host Codex auth into shared volume..."));
+  console.log(chalk.cyan("Initializing Codex config volume..."));
   const baseImage = "agent-sandbox-base:latest";
-  const script = [
-    "cp -f /src/auth.json /dst/ 2>/dev/null || true",
-    "cp -f /src/profile.json /dst/ 2>/dev/null || true",
-    "echo 'Current files in shared volume:'",
-    "ls -la /dst",
-  ].join("; ");
-  const result =
-    await $`docker run --rm --entrypoint /bin/bash -v ${hostCodexDir}:/src:ro -v ${codexConfigVolume}:/dst ${baseImage} -lc ${script}`.quiet();
 
-  console.log(chalk.green("Codex auth import completed."));
-  process.stdout.write(result.stdout);
+  const scriptLines: string[] = [];
+  scriptLines.push(
+    // Create destination directory if it doesn't exist
+    "mkdir -p /dst",
+    // config.toml
+    'if [ -f /dst/config.toml ] && [ "$FORCE" != "1" ]; then echo \'config.toml exists; leaving as-is\'; else cp -f /src-templates/config.toml /dst/config.toml; fi',
+    // AGENTS.md
+    'if [ -f /dst/AGENTS.md ] && [ "$FORCE" != "1" ]; then echo \'AGENTS.md exists; leaving as-is\'; else cp -f /src-templates/AGENTS.md /dst/AGENTS.md; fi',
+  );
+
+  if (args.auth) {
+    // auth.json
+    scriptLines.push("cp -f /src-auth/auth.json /dst/");
+    // profile.json
+    scriptLines.push(
+      "if [ -f /src-auth/profile.json ]; then ",
+      '  if [ -f /dst/profile.json ] && [ "$FORCE" != "1" ]; then echo \'profile.json exists; leaving as-is\'; else cp -f /src-auth/profile.json /dst/; fi; ',
+      "else echo 'No profile.json on host; skipping'; fi",
+    );
+  }
+
+  scriptLines.push("echo 'Current files in shared volume:'", "ls -la /dst");
+  const script = scriptLines.join("; ");
+
+  const dockerArgs = [
+    "run",
+    "--rm",
+    "--entrypoint",
+    "/bin/bash",
+    "-v",
+    `${templatesDir}:/src-templates:ro`,
+    "-v",
+    `${codexConfigVolume}:/dst`,
+  ];
+  if (args.auth) {
+    dockerArgs.push("-v", `${hostCodexDir}:/src-auth:ro`);
+  }
+  dockerArgs.push("-e", `FORCE=${args.force ? "1" : "0"}`);
+  dockerArgs.push(baseImage, "-lc", script);
+
+  try {
+    const result = await $`docker ${dockerArgs}`.quiet();
+    process.stdout.write(result.stdout);
+    console.log(chalk.green("Codex config initialization complete."));
+  } finally {
+    // Best-effort cleanup of temporary templates directory
+    try {
+      await fs.promises.rm(tmpBase, { recursive: true, force: true });
+    } catch {
+      // ignore cleanup errors
+    }
+  }
 }
 
 async function codexLogout() {

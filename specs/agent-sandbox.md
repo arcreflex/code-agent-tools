@@ -194,13 +194,13 @@ Pre-installed globally in the base image:
 
 - **Claude Code**: Config at `/home/node/.claude`
 - **OpenAI Codex**: Config at `/home/node/.codex`
- - **ast-grep**: Installed as `ast-grep`/`sg` on PATH for structural search and rewrite
+- **ast-grep**: Installed as `ast-grep`/`sg` on PATH for structural search and rewrite
 
 ## Codex configuration and auth
 
 Codex uses a local OAuth callback on `http://localhost:1455/auth/callback` and stores credentials in `~/.codex/auth.json`. The sandbox persists these credentials and related configuration in a shared Codex config volume so all sandboxes can reuse them.
 
-### Initialize Codex config (new)
+### Initialize Codex config
 
 ```
 # Initialize shared Codex config in the sandbox volume
@@ -213,7 +213,7 @@ Behavior:
 - Ensures a `config.toml` exists with a "high" profile for GPT‑5 configured for high reasoning effort.
 - Creates or updates an `AGENTS.md` note inside the Codex config volume describing the containerized sandbox environment and installed tools.
 - With `--auth`, imports host Codex credentials into the shared volume.
-- Idempotent by default: if `config.toml`, `AGENTS.md`, `auth.json`, or `profile.json` already exist in the volume, they are left as‑is and a message is printed. Use `--force` to overwrite these files.
+- Idempotent by default: if `config.toml`, `AGENTS.md`, or `profile.json` already exist in the volume, they are left as‑is and a message is printed. Use `--force` to overwrite these files. (Exception: `auth.json` is always overwritten if `--auth` is set.)
 
 Example `config.toml` profile created/ensured by this command:
 
