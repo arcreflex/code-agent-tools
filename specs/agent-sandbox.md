@@ -308,4 +308,108 @@ Configuration stored in `.agent-sandbox/` directory:
 
 - Manual testing in sandbox environment
 - Verification of firewall rules
-- CLI functionality validation
+ - CLI functionality validation
+
+## Dual-Mount, Branch-Aware Mode
+
+### Goal
+Enable multiple concurrent sandboxes per repo without proliferating volumes, while keeping strong isolation between host and sandbox. We always mount:
+1) a single shared **repo-shelf** Docker volume (per upstream repo) at `/repo-shelf`
+2) the **host bind** of the current working repo at `/workspace/<repoName>`
+
+The only difference between modes is the container **working directory**:
+- **Bind mode** (default): `WORKDIR=/workspace/<repoName>`
+- **Branch mode** (`--branch <name>`): `WORKDIR=/repo-shelf/worktrees/<branch-sanitized>`
+
+### Layout inside the shared volume
+```
+
+/repo-shelf
+/repo                    # primary non-bare repo (shares object store)
+/worktrees
+/<branch-sanitized>    # one worktree per branch
+
+```
+
+### Host remote
+The primary repo at `/repo-shelf/repo` has a persistent remote:
+```
+
+host → file:///workspace/<repoName>
+
+```
+This lets a sandbox push directly back to the host checkout with:
+```
+
+git push host <branch>
+
+```
+Git’s default safety (deny push to checked-out branch) stays in place; typically the host has `main` checked out, so pushing feature branches is allowed.
+
+### Provisioning (idempotent)
+When `--branch <name>` is requested (or the provisioning helper is invoked), run a short-lived container from the base image, mounting **both** the repo-shelf volume and the host bind:
+
+1. **Ensure the repo-shelf volume exists** (named from upstream repo identity; see “Volume naming”).
+2. **Prime the primary repo**:
+   - If `/repo-shelf/repo/.git` is missing: `git clone --no-checkout "<ORIGIN_URL>" /repo-shelf/repo`
+   - `git -C /repo-shelf/repo remote set-url origin "<ORIGIN_URL>" || true`
+   - `git -C /repo-shelf/repo fetch --prune origin`
+3. **Wire the host remote**:
+   - `git -C /repo-shelf/repo remote add host "file:///workspace/<repoName>" || git -C ... remote set-url host "file:///workspace/<repoName>"`
+4. **Ensure the branch worktree**:
+   - `BR_DIR=/repo-shelf/worktrees/<branch-sanitized>`
+   - If `origin/<branch>` exists: `git -C /repo-shelf/repo worktree add -B "<branch>" "$BR_DIR" "origin/<branch>"`
+   - Else: `git -C /repo-shelf/repo worktree add -b "<branch>" "$BR_DIR" origin/main`
+
+> **Sanitization**: replace `/` and whitespace with `__` for worktree directory names.
+
+### CLI changes
+
+#### New/updated flags
+- `--branch <name>`: switch to branch mode (provision if needed, set workdir to worktree)
+- `--remote <url>` (optional): override origin auto-detection; otherwise derive from host repo’s `remote.origin.url`.
+
+#### New/updated commands
+- `start [path] [--branch <name>] [--remote <url>] [--base-tag <tag>] [--build]`
+  - Always mounts both repo-shelf and host bind.
+  - Sets workdir based on branch flag.
+  - If `--branch` is present: runs provisioning (idempotent) before start.
+- `shell [path] [--branch <name>] [--build]`
+  - Same as `start` but then opens shell (existing behavior), using branch workdir if provided.
+- `checkout <branch> [--remote <url>] [--base-tag <tag>]`
+  - Provision repo-shelf + worktree only (no container start).
+- `list`
+  - Show running containers with: repo, mode, workdir, and mapped volumes.
+- `show-run [path] [--branch <name>]`
+  - Print the full `docker run` command with both mounts and computed workdir.
+
+#### Backward compatibility
+- If no `--branch` is provided, behavior remains “bind mode”, but repo-shelf is still mounted for parity and easy `cd` into worktrees later.
+- No changes to firewall or git-wrapper semantics.
+
+### Volume naming
+- **Repo-shelf**: one volume per upstream repo (not per sandbox).
+  - Name: `agent-sbx-repo-<repoIdHash>`
+  - `repoIdHash` = MD5 of `remote.origin.url` (stable across machines for the same upstream).
+- **History/config volumes**: unchanged (per current design).
+
+### Container naming (branch mode)
+Append the sanitized branch name to the existing scheme:
+```
+
+agent-sandbox-<repoName>-<branchSan>-<hash>
+
+```
+
+### Concurrency & safety
+- Multiple containers can operate on different worktrees safely.
+- Provisioning should be idempotent. If two branch sandboxes race on first creation, allow one to fail and retry, or serialize with a simple file lock (future improvement).
+- `git push host <branch>`:
+  - Will be rejected if the host has that branch checked out (desired).
+  - Otherwise accepted; host hooks (if any) will run.
+
+### Testing checklist
+- Start two sandboxes for different branches → both mount the same repo-shelf; independent workdirs.
+- From a branch sandbox: commit + `git push host <branch>` succeeds when host has `main` checked out.
+- From bind-mode container: `cd /repo-shelf/worktrees/<branchSan>` and operate normally.
+- `list` shows containers with correct mode and workdir.

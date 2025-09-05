@@ -35,3 +35,12 @@ The monorepo uses npm workspaces with two main packages under `packages/`:
 - `/workspace/code-agent-tools/packages/agent-sandbox/template/scripts/init-firewall.sh`: Network firewall setup with domain allowlisting
 - `/workspace/code-agent-tools/packages/agent-precommit/template/system-prompt.md`: Configurable AI review prompt
 - `/workspace/code-agent-tools/scripts/compare-sandbox-dirs.sh`: Template integrity verification script
+
+#### Dual-Mount, Branch-Aware Mode (agent-sandbox)
+- Every sandbox mounts:
+  - a shared **repo-shelf** Docker volume at `/repo-shelf` (one per upstream repo)
+  - the **host bind** repo at `/workspace/<repoName>`
+- **Bind mode**: workdir is `/workspace/<repoName>`
+- **Branch mode** (`--branch`): workdir is `/repo-shelf/worktrees/<branchSan>`
+- A persistent `host` remote is wired to `file:///workspace/<repoName>` inside `/repo-shelf/repo`, enabling `git push host <branch>` back to the host checkout (push to current checked-out branch remains denied by default).
+- Worktrees live under `/repo-shelf/worktrees/*` and share the object store in `/repo-shelf/repo` (non-bare).

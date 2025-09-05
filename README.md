@@ -24,6 +24,8 @@ npm run build
 
 Containerized development environments with built-in guardrails. See [detailed specification](specs/agent-sandbox.md).
 
+**Branch-aware mode (dual mount):** sandboxes mount both the host repo and a shared “repo-shelf” volume. Use `--branch <name>` to work in `/repo-shelf/worktrees/<branch>`. Push back to the host with `git push host <branch>`. Default bind mode still works and can `cd` into any worktree.
+
 ### [agent-precommit](./packages/agent-precommit/)
 
 LLM-based pre-commit hook for code review. See [detailed specification](specs/agent-precommit.md).
