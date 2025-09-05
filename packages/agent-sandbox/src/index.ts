@@ -26,6 +26,12 @@ async function main() {
         type: "boolean",
         default: false,
       },
+      branch: {
+        type: "string",
+      },
+      remote: {
+        type: "string",
+      },
       "base-tag": {
         type: "string",
         default: "latest",
@@ -77,26 +83,76 @@ async function main() {
     console.log(configVolume);
   } else if (args.positionals[0] === "restart") {
     const localWorkspaceFolder = args.positionals[1] || process.cwd();
-    await start({ localWorkspaceFolder, restart: true, build: !!args.values.build });
+    await start({
+      localWorkspaceFolder,
+      restart: true,
+      build: !!args.values.build,
+      branch: args.values.branch,
+      remoteOverride: args.values.remote,
+      baseTag: args.values["base-tag"],
+    });
   } else if (args.positionals[0] === "start") {
     const localWorkspaceFolder = args.positionals[1] || process.cwd();
-    await start({ localWorkspaceFolder, restart: false, build: !!args.values.build });
+    await start({
+      localWorkspaceFolder,
+      restart: false,
+      build: !!args.values.build,
+      branch: args.values.branch,
+      remoteOverride: args.values.remote,
+      baseTag: args.values["base-tag"],
+    });
   } else if (args.positionals[0] === "stop") {
     const localWorkspaceFolder = args.positionals[1] || process.cwd();
-    await stop({ localWorkspaceFolder });
+    await stop({ localWorkspaceFolder, branch: args.values.branch });
   } else if (args.positionals[0] === "shell") {
     const localWorkspaceFolder = args.positionals[1] || process.cwd();
-    await shell({ localWorkspaceFolder, restart: !!args.values.build, build: !!args.values.build });
+    await shell({
+      localWorkspaceFolder,
+      restart: !!args.values.build,
+      build: !!args.values.build,
+      branch: args.values.branch,
+      remoteOverride: args.values.remote,
+      baseTag: args.values["base-tag"],
+    });
   } else if (args.positionals[0] === "show-run") {
     const localWorkspaceFolder = args.positionals[1] || process.cwd();
-    await showRun({ localWorkspaceFolder });
+    await showRun({
+      localWorkspaceFolder,
+      branch: args.values.branch,
+      remoteOverride: args.values.remote,
+      baseTag: args.values["base-tag"],
+    });
+  } else if (args.positionals[0] === "checkout") {
+    const branch = args.positionals[1];
+    if (!branch) {
+      console.error("Usage: agent-sandbox checkout <branch> [--remote <url>] [--base-tag <tag>]");
+      process.exit(1);
+    }
+    const localWorkspaceFolder = process.cwd();
+    const originUrl = await getOriginUrl(localWorkspaceFolder, args.values.remote);
+    await ensureShelfAndWorktree({
+      originUrl,
+      localWorkspaceFolder,
+      branch,
+      baseTag: args.values["base-tag"],
+    });
+    console.log(chalk.green(`Provisioned worktree for '${branch}'.`));
+  } else if (args.positionals[0] === "list") {
+    await listContainers();
   } else if (args.positionals[0] === "codex-init-config") {
     await codexInitConfig({ auth: args.values.auth, force: args.values.force });
   } else if (args.positionals[0] === "codex-logout") {
     await codexLogout();
   } else {
     const localWorkspaceFolder = process.cwd();
-    await shell({ localWorkspaceFolder, restart: !!args.values.build, build: !!args.values.build });
+    await shell({
+      localWorkspaceFolder,
+      restart: !!args.values.build,
+      build: !!args.values.build,
+      branch: args.values.branch,
+      remoteOverride: args.values.remote,
+      baseTag: args.values["base-tag"],
+    });
   }
 }
 
@@ -128,9 +184,10 @@ async function loadConfig(args: { localWorkspaceFolder: string }): Promise<Sandb
   return parsed;
 }
 
-async function containerExists(localWorkspaceFolder: string) {
-  const containerName = getContainerName({ localWorkspaceFolder });
-  const containerExists = await $`docker ps -q --filter name=${containerName}`.quiet();
+async function containerExists(localWorkspaceFolder: string, branchSan?: string | null) {
+  const containerName = getContainerName({ localWorkspaceFolder, branchSan });
+  const nameFilter = `^/${containerName}$`;
+  const containerExists = await $`docker ps -q --filter name=${nameFilter}`.quiet();
   return !!containerExists.stdout.trim();
 }
 
@@ -274,9 +331,12 @@ function getImageName(args: { localWorkspaceFolder: string }) {
   return `agent-sandbox-${workspaceName}-${hash}`;
 }
 
-function getContainerName(args: { localWorkspaceFolder: string }) {
+function getContainerName(args: { localWorkspaceFolder: string; branchSan?: string | null }) {
   const workspaceName = path.basename(args.localWorkspaceFolder);
   const hash = getWorkspaceHash(args.localWorkspaceFolder);
+  if (args.branchSan) {
+    return `agent-sandbox-${workspaceName}-${args.branchSan}-${hash}`;
+  }
   return `agent-sandbox-${workspaceName}-${hash}`;
 }
 
@@ -286,17 +346,27 @@ function getHistoryVolumeName(args: { localWorkspaceFolder: string }) {
   return `agent-sandbox-history-${workspaceName}-${hash}`;
 }
 
-async function getDockerRunArgs(args: { localWorkspaceFolder: string }) {
-  const containerName = getContainerName(args);
+async function getDockerRunArgs(args: {
+  localWorkspaceFolder: string;
+  branch?: string | null;
+  remoteOverride?: string | null;
+  baseTag?: string | null;
+}) {
+  const branch = args.branch || null;
+  const branchSan = branch ? sanitizeBranch(branch) : null;
+  const containerName = getContainerName({ localWorkspaceFolder: args.localWorkspaceFolder, branchSan });
   const historyVolume = getHistoryVolumeName(args);
   const config = await loadConfig(args);
   const workspaceName = path.basename(args.localWorkspaceFolder);
+  const originUrl = await getOriginUrl(args.localWorkspaceFolder, args.remoteOverride || undefined);
+  const repoShelfVolume = getRepoShelfVolumeName(originUrl);
 
   const mounts = [
     `source=${historyVolume},target=/commandhistory,type=volume`,
     `source=${configVolume},target=/home/node/.claude,type=volume`,
     `source=${codexConfigVolume},target=/home/node/.codex,type=volume`,
     "source=/etc/localtime,target=/etc/localtime,type=bind,readonly",
+    `source=${repoShelfVolume},target=/repo-shelf,type=volume`,
   ];
 
   const env = {
@@ -306,7 +376,7 @@ async function getDockerRunArgs(args: { localWorkspaceFolder: string }) {
 
   const workspaceMount = `source=${args.localWorkspaceFolder},target=/workspace/${workspaceName},type=bind,consistency=delegated`;
 
-  const readonlyMounts = [];
+  const readonlyMounts: string[] = [];
   if (config.readonly) {
     for (const readonlyPath of config.readonly) {
       const sourcePath = path.join(args.localWorkspaceFolder, readonlyPath);
@@ -326,6 +396,9 @@ async function getDockerRunArgs(args: { localWorkspaceFolder: string }) {
     containerName,
     "--label",
     `workspace=${args.localWorkspaceFolder}`,
+    ...(branchSan ? ["--label", `branch=${branchSan}`] : []),
+    "--label",
+    `repoShelfVolume=${repoShelfVolume}`,
     "-d",
     "--cap-add=NET_ADMIN",
     "--cap-add=NET_RAW",
@@ -334,7 +407,7 @@ async function getDockerRunArgs(args: { localWorkspaceFolder: string }) {
     workspaceMount,
     ...readonlyMounts.flatMap((mount) => ["--mount", mount]),
     "--workdir",
-    `/workspace/${workspaceName}`,
+    branchSan ? `/repo-shelf/worktrees/${branchSan}` : `/workspace/${workspaceName}`,
     ...Object.entries(env).flatMap(([key, value]) => ["-e", `${key}=${value}`]),
     ...ports.flatMap((port) => ["-p", port]),
   ];
@@ -342,15 +415,33 @@ async function getDockerRunArgs(args: { localWorkspaceFolder: string }) {
   return { runArgs, containerName };
 }
 
-async function start(args: { localWorkspaceFolder: string; build: boolean; restart: boolean }) {
-  const image = getImageName(args);
-  const imageExists = await $`docker images -q ${image}`.quiet();
-  if (!imageExists.stdout.trim() || args.build) {
-    await build(args);
+async function start(args: {
+  localWorkspaceFolder: string;
+  build: boolean;
+  restart: boolean;
+  branch?: string | null;
+  remoteOverride?: string | null;
+  baseTag?: string | null;
+}) {
+  const branchSan = args.branch ? sanitizeBranch(args.branch) : null;
+  if (args.branch) {
+    const originUrl = await getOriginUrl(args.localWorkspaceFolder, args.remoteOverride || undefined);
+    await ensureShelfAndWorktree({
+      originUrl,
+      localWorkspaceFolder: args.localWorkspaceFolder,
+      branch: args.branch,
+      baseTag: args.baseTag || "latest",
+    });
   }
 
-  const containerName = getContainerName(args);
-  if (await containerExists(args.localWorkspaceFolder)) {
+  const image = getImageName({ localWorkspaceFolder: args.localWorkspaceFolder });
+  const imageExists = await $`docker images -q ${image}`.quiet();
+  if (!imageExists.stdout.trim() || args.build) {
+    await build({ localWorkspaceFolder: args.localWorkspaceFolder, baseTag: args.baseTag || undefined });
+  }
+
+  const containerName = getContainerName({ localWorkspaceFolder: args.localWorkspaceFolder, branchSan });
+  if (await containerExists(args.localWorkspaceFolder, branchSan)) {
     if (args.restart) {
       await stop(args);
     } else {
@@ -359,21 +450,36 @@ async function start(args: { localWorkspaceFolder: string; build: boolean; resta
     }
   }
 
-  const { runArgs } = await getDockerRunArgs(args);
+  const { runArgs } = await getDockerRunArgs({
+    localWorkspaceFolder: args.localWorkspaceFolder,
+    branch: args.branch,
+    remoteOverride: args.remoteOverride,
+    baseTag: args.baseTag,
+  });
 
   await $`docker run ${runArgs} ${image} tail -f /dev/null`.quiet();
   console.log(`Started container: ${containerName}`);
 }
 
-async function showRun(args: { localWorkspaceFolder: string }) {
-  const image = getImageName(args);
+async function showRun(args: {
+  localWorkspaceFolder: string;
+  branch?: string | null;
+  remoteOverride?: string | null;
+  baseTag?: string | null;
+}) {
+  const image = getImageName({ localWorkspaceFolder: args.localWorkspaceFolder });
   const imageExists = await $`docker images -q ${image}`.quiet();
   if (!imageExists.stdout.trim()) {
     console.log(chalk.yellow(`Image ${image} not found. Run 'agent-sandbox build' first.`));
     return;
   }
 
-  const { runArgs } = await getDockerRunArgs(args);
+  const { runArgs } = await getDockerRunArgs({
+    localWorkspaceFolder: args.localWorkspaceFolder,
+    branch: args.branch,
+    remoteOverride: args.remoteOverride,
+    baseTag: args.baseTag,
+  });
 
   // Use JSON.stringify for proper shell escaping
   const escapeArg = (arg: string) => {
@@ -389,20 +495,29 @@ async function showRun(args: { localWorkspaceFolder: string }) {
   console.log(command);
 }
 
-async function shell(args: { localWorkspaceFolder: string; restart: boolean; build: boolean }) {
-  const exists = await containerExists(args.localWorkspaceFolder);
+async function shell(args: {
+  localWorkspaceFolder: string;
+  restart: boolean;
+  build: boolean;
+  branch?: string | null;
+  remoteOverride?: string | null;
+  baseTag?: string | null;
+}) {
+  const branchSan = args.branch ? sanitizeBranch(args.branch) : null;
+  const exists = await containerExists(args.localWorkspaceFolder, branchSan);
   if (!exists || args.restart) {
     await start(args);
   }
 
-  const containerName = getContainerName(args);
+  const containerName = getContainerName({ localWorkspaceFolder: args.localWorkspaceFolder, branchSan });
   await $({
     stdio: "inherit",
   })`docker exec -it ${containerName} bash`;
 }
 
-async function stop(args: { localWorkspaceFolder: string }) {
-  const containerName = getContainerName(args);
+async function stop(args: { localWorkspaceFolder: string; branch?: string | null }) {
+  const branchSan = args.branch ? sanitizeBranch(args.branch) : null;
+  const containerName = getContainerName({ localWorkspaceFolder: args.localWorkspaceFolder, branchSan });
   await $`docker stop ${containerName}`.quiet();
   await $`docker rm ${containerName}`.quiet();
   console.log(`Container ${containerName} stopped and removed`);
@@ -509,6 +624,112 @@ async function codexLogout() {
     await $`docker run --rm --entrypoint /bin/bash -v ${codexConfigVolume}:/dst ${baseImage} -lc ${script}`.quiet();
   console.log(chalk.green("Local Codex credentials deleted from the volume."));
   process.stdout.write(result.stdout);
+}
+
+// --- Branch-aware helpers ---
+function sanitizeBranch(name: string): string {
+  return name.replace(/[\s/]+/g, "__");
+}
+
+async function getOriginUrl(localWorkspaceFolder: string, override?: string): Promise<string> {
+  if (override) return override;
+  const result = await $`git -C ${localWorkspaceFolder} config --get remote.origin.url`.quiet();
+  const url = result.stdout.trim();
+  if (!url) {
+    throw new Error(`Unable to determine remote.origin.url for ${localWorkspaceFolder}. Use --remote <url>.`);
+  }
+  return url;
+}
+
+function getRepoShelfVolumeName(originUrl: string): string {
+  const hash = crypto.createHash("md5").update(originUrl).digest("hex");
+  return `agent-sbx-repo-${hash}`;
+}
+
+async function ensureShelfAndWorktree(args: {
+  originUrl: string;
+  localWorkspaceFolder: string;
+  branch: string;
+  baseTag?: string | null;
+}) {
+  const repoName = path.basename(args.localWorkspaceFolder);
+  const branchSan = sanitizeBranch(args.branch);
+  const repoShelfVolume = getRepoShelfVolumeName(args.originUrl);
+  const baseImage = `agent-sandbox-base:${args.baseTag || "latest"}`;
+
+  await $`docker volume create ${repoShelfVolume}`.quiet();
+
+  const script = [
+    "set -euo pipefail",
+    "mkdir -p /repo-shelf/worktrees",
+    '[ -d /repo-shelf/repo/.git ] || git clone --no-checkout "$ORIGIN_URL" /repo-shelf/repo',
+    'git -C /repo-shelf/repo remote set-url origin "$ORIGIN_URL" || true',
+    "git -C /repo-shelf/repo fetch --prune origin",
+    'git -C /repo-shelf/repo remote add host "file:///workspace/$REPO_NAME" || git -C /repo-shelf/repo remote set-url host "file:///workspace/$REPO_NAME"',
+    'BR_DIR="/repo-shelf/worktrees/$BRANCH_SAN"',
+    "if git -C /repo-shelf/repo rev-parse --verify --quiet origin/$BRANCH_NAME; then",
+    '  git -C /repo-shelf/repo worktree add -B "$BRANCH_NAME" "$BR_DIR" "origin/$BRANCH_NAME" || true',
+    "else",
+    '  git -C /repo-shelf/repo worktree add -b "$BRANCH_NAME" "$BR_DIR" origin/main || true',
+    "fi",
+  ].join("; ");
+
+  const dockerArgs = [
+    "run",
+    "--rm",
+    "--entrypoint",
+    "/bin/bash",
+    "-e",
+    `ORIGIN_URL=${args.originUrl}`,
+    "-e",
+    `REPO_NAME=${repoName}`,
+    "-e",
+    `BRANCH_NAME=${args.branch}`,
+    "-e",
+    `BRANCH_SAN=${branchSan}`,
+    "-v",
+    `${repoShelfVolume}:/repo-shelf`,
+    "-v",
+    `${args.localWorkspaceFolder}:/workspace/${repoName}:ro`,
+    baseImage,
+    "-lc",
+    script,
+  ];
+
+  await $`docker ${dockerArgs}`.quiet();
+}
+
+async function listContainers() {
+  const ps =
+    await $`docker ps --format {{.Names}}\t{{.Label \"workspace\"}}\t{{.Label \"branch\"}}\t{{.Label \"repoShelfVolume\"}}`.quiet();
+  const lines = ps.stdout.trim().split("\n").filter(Boolean);
+  if (!lines.length) {
+    console.log("No running agent-sandbox containers.");
+    return;
+  }
+  const rows: Array<{ name: string; mode: string; workdir: string; volume: string; hostPath: string }> = [];
+  for (const line of lines) {
+    const [name, hostPath, , volumeLabel] = line.split("\t");
+    if (!name || !hostPath) continue;
+    const inspect = await $`docker inspect -f {{.Config.WorkingDir}} ${name}`.quiet();
+    const workdir = inspect.stdout.trim();
+    const mode = workdir.startsWith("/repo-shelf/worktrees/") ? "branch" : "bind";
+    let volume = volumeLabel || "";
+    if (!volume) {
+      try {
+        const origin = await getOriginUrl(hostPath);
+        volume = getRepoShelfVolumeName(origin);
+      } catch {
+        volume = "?";
+      }
+    }
+    rows.push({ name, mode, workdir, volume, hostPath });
+  }
+  // Print header
+  console.log(["CONTAINER", "MODE", "WORKDIR", "REPO-SHELF-VOLUME", "HOST-PATH"].join("\t"));
+  for (const r of rows) {
+    console.log([r.name, r.mode, r.workdir, r.volume, r.hostPath].join("\t"));
+  }
 }
 
 main().catch((e) => {
