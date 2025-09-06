@@ -56,6 +56,10 @@ async function main() {
         type: "string",
         default: "latest",
       },
+      root: {
+        type: "boolean",
+        default: false,
+      },
     },
   });
 
@@ -130,6 +134,9 @@ async function main() {
     console.log(chalk.green(`Provisioned worktree for '${branch}'.`));
   } else if (args.positionals[0] === "list") {
     await listContainers();
+  } else if (args.positionals[0] === "admin") {
+    const localWorkspaceFolder = args.positionals[1] || process.cwd();
+    await admin({ localWorkspaceFolder, root: !!args.values.root, build: !!args.values.build });
   } else if (args.positionals[0] === "codex-init-config") {
     await codexInitConfig({ auth: args.values.auth, force: args.values.force });
   } else if (args.positionals[0] === "codex-logout") {
@@ -336,6 +343,12 @@ function getHistoryVolumeName(args: { localWorkspaceFolder: string }) {
   return `agent-sandbox-history-${workspaceName}-${hash}`;
 }
 
+function getAdminContainerName(args: { localWorkspaceFolder: string }) {
+  const workspaceName = path.basename(args.localWorkspaceFolder);
+  const hash = getWorkspaceHash(args.localWorkspaceFolder);
+  return `agent-sandbox-admin-${workspaceName}-${hash}`;
+}
+
 async function getDockerRunArgs(args: {
   localWorkspaceFolder: string;
   branch?: string | null;
@@ -403,6 +416,58 @@ async function getDockerRunArgs(args: {
   return { runArgs, containerName };
 }
 
+async function getAdminDockerRunArgs(args: { localWorkspaceFolder: string; root?: boolean | null }) {
+  const workspaceName = path.basename(args.localWorkspaceFolder);
+  const historyVolume = getHistoryVolumeName(args);
+  const config = await loadConfig(args);
+  const repoShelfVolume = getRepoShelfVolumeNameFromPath(args.localWorkspaceFolder);
+  const containerName = getAdminContainerName(args);
+
+  const mounts = [
+    `source=${historyVolume},target=/commandhistory,type=volume`,
+    `source=${configVolume},target=/home/node/.claude,type=volume`,
+    `source=${codexConfigVolume},target=/home/node/.codex,type=volume`,
+    "source=/etc/localtime,target=/etc/localtime,type=bind,readonly",
+    `source=${repoShelfVolume},target=/repo-shelf,type=volume`,
+  ];
+
+  const env: Record<string, string> = {
+    NODE_OPTIONS: "--max-old-space-size=4096",
+    CLAUDE_CONFIG_DIR: "/home/node/.claude",
+  };
+
+  const workspaceMount = `source=${args.localWorkspaceFolder},target=/workspace/${workspaceName},type=bind,consistency=delegated`;
+
+  // In admin mode we do NOT mount /.agent-sandbox and we do NOT add readonly overlays
+  const ports = config.ports || [];
+
+  const runArgs: string[] = [
+    "--name",
+    containerName,
+    "--rm",
+    "-it",
+    "--label",
+    `workspace=${args.localWorkspaceFolder}`,
+    "--label",
+    "mode=admin",
+    "--cap-add=NET_ADMIN",
+    "--cap-add=NET_RAW",
+    ...mounts.flatMap((mount) => ["--mount", mount]),
+    "--mount",
+    workspaceMount,
+    "--workdir",
+    `/workspace/${workspaceName}`,
+    ...Object.entries(env).flatMap(([key, value]) => ["-e", `${key}=${value}`]),
+    ...ports.flatMap((port) => ["-p", port]),
+  ];
+
+  if (args.root) {
+    runArgs.unshift("-u", "0:0");
+  }
+
+  return { runArgs, containerName };
+}
+
 async function start(args: {
   localWorkspaceFolder: string;
   build: boolean;
@@ -443,6 +508,23 @@ async function start(args: {
 
   await $`docker run ${runArgs} ${image} tail -f /dev/null`.quiet();
   console.log(`Started container: ${containerName}`);
+}
+
+async function admin(args: { localWorkspaceFolder: string; root: boolean; build: boolean }) {
+  // Ensure image exists
+  const image = getImageName({ localWorkspaceFolder: args.localWorkspaceFolder });
+  const imageExists = await $`docker images -q ${image}`.quiet();
+  if (!imageExists.stdout.trim() || args.build) {
+    await build({ localWorkspaceFolder: args.localWorkspaceFolder });
+  }
+
+  const { runArgs, containerName } = await getAdminDockerRunArgs({
+    localWorkspaceFolder: args.localWorkspaceFolder,
+    root: args.root,
+  });
+
+  console.log(chalk.cyan(`Starting admin shell in container ${containerName}...`));
+  await $({ stdio: "inherit" })`docker run ${runArgs} ${image}`;
 }
 
 async function showRun(args: { localWorkspaceFolder: string; branch?: string | null; baseTag?: string | null }) {
