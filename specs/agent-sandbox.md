@@ -412,3 +412,47 @@ agent-sandbox-<repoName>-<branchSan>-<hash>
 - From a branch sandbox: commit + `git push host <branch>` succeeds when host has `main` checked out.
 - From bind-mode container: `cd /repo-shelf/worktrees/<branchSan>` and operate normally.
 - `list` shows containers with correct mode and workdir.
+
+## Admin Mode
+
+### Purpose
+Provide an escape hatch for repair and maintenance tasks that require relaxed guardrails (e.g., fixing file ownership or running commands as root). Not intended for routine development.
+
+### Command
+`agent-sandbox admin [path] [--root]`
+
+### Behavior
+- Mounts the same volumes as a normal sandbox (repo-shelf and host bind).
+- Always starts in bind mode: `WORKDIR=/workspace/<repoName>`.
+- Does not provision or switch worktrees automatically. You can still `cd /repo-shelf/worktrees/<branchSan>` manually if needed.
+
+### Differences vs normal mode
+- No marker mount: does NOT mount `/.agent-sandbox` inside the container.
+  - Effect: tools that look for the marker (e.g., agent-precommit) will not auto-activate.
+- No readonly overlays: protected directory binds are omitted; everything in the workspace is writable from the container.
+- Optional root user: `--root` starts the container as `root` (`-u 0:0`). Useful for `chown`, permission fixes, or installing ad‑hoc diagnostics.
+
+### Flags
+- `--root`: run as root inside the container.
+
+### Container identity
+- Name: `agent-sandbox-admin-<repoName>-<hash>`
+- Labels: `workspace=<hostPath>`, `mode=admin`
+
+### Safety notes
+- Admin mode intentionally relaxes guardrails. Prefer normal sandbox for daily work.
+- If you need to bypass the git wrapper or hooks, you can explicitly invoke the real binary (e.g., `/usr/bin/git`) from an admin shell.
+- Network firewall behavior remains unchanged.
+
+### Examples
+```
+# Repair permissions in a worktree as root
+agent-sandbox admin --root
+cd /repo-shelf/worktrees/feature__fix-ownership
+chown -R node:node .
+
+# Make a one-off commit without sandbox-managed precommit hooks
+agent-sandbox admin
+cd /repo-shelf/worktrees/quickfix
+/usr/bin/git commit --no-verify -m "hotfix: emergency commit"
+```
