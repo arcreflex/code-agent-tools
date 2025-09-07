@@ -12,14 +12,6 @@ fi
 
 echo "Firewall setup complete."
 
-# Add a safety guard for Git repo-shelf ownership checks (best effort & idempotent)
-# This complements provisioning chown and avoids surprise failures if
-# ownership drifts or volumes are pre-populated. Runs as the current user.
-if command -v git >/dev/null 2>&1; then
-  if ! git config --global --get-regexp '^safe\.directory\s*/repo-shelf/repo$' >/dev/null 2>&1; then
-    git config --global --add safe.directory /repo-shelf/repo || true
-  fi
-fi
 
 # If running interactively, start shell
 if [ -t 0 ]; then
