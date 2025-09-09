@@ -716,14 +716,12 @@ async function ensureShelfAndWorktree(args: { localWorkspaceFolder: string; bran
     'as_node() { su -p -s /bin/sh -c "$1" node; }',
     "# Clone/wire/fetch as node",
     "as_node 'test -d /repo-shelf/repo/.git || git clone --no-checkout \"$HOST_URL\" /repo-shelf/repo'",
-    'as_node \'git -C /repo-shelf/repo remote add host "$HOST_URL" || git -C /repo-shelf/repo remote set-url host "$HOST_URL"\'',
+    'as_node \'git -C /repo-shelf/repo remote add host "$HOST_URL" 2>/dev/null || git -C /repo-shelf/repo remote set-url host "$HOST_URL"\'',
     // Intentionally do not set an 'origin' remote inside the shelf repo (host-only provisioning)
     "as_node 'git -C /repo-shelf/repo fetch --prune host'",
     "# Create or update worktree as node (idempotent)",
-    "# Skip if BR_DIR is already a registered worktree",
-    "if as_node 'git -C /repo-shelf/repo worktree list --porcelain | awk \"/^worktree /{print " +
-      "\\\\" +
-      '$2}" | grep -Fx -- "$BR_DIR" >/dev/null\'; then',
+    "# Skip if BR_DIR is already a registered worktree (avoid awk quoting issues)",
+    "if as_node 'git -C /repo-shelf/repo worktree list --porcelain | grep -Fx -- \"worktree $BR_DIR\" >/dev/null'; then",
     '  echo "Worktree already present at $BR_DIR"',
     "elif as_node 'git -C /repo-shelf/repo rev-parse --verify --quiet refs/remotes/host/$BRANCH_NAME'; then",
     '  as_node \'git -C /repo-shelf/repo worktree add -B "$BRANCH_NAME" "$BR_DIR" "host/$BRANCH_NAME"\'',
