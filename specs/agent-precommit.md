@@ -32,6 +32,10 @@ Agent-precommit provides AI-powered code review for git commits, ensuring code q
   - Shows a specific review if a filename is provided
   - Displays the review feedback and pass/fail status
   - Shows the timestamp and objective of the review
+- **Review Pushed Range**: `agent-precommit review-range <old> <new> [--ref <ref>] [--project-context <glob> ...] [--objective <message>] [--preview]`
+  - Reviews the commit range `<old>..<new>` instead of staged changes
+  - Intended for host-side hooks (e.g., `pre-receive`) to enforce review on push
+  - Saves results under `.agent-precommit/reviews/` like normal reviews
 - **Sandbox-Only Mode**: `agent-precommit --sandbox-only`
   - Only runs when inside agent-sandbox environment
   - Exits 0 when not in sandbox
@@ -40,7 +44,7 @@ Agent-precommit provides AI-powered code review for git commits, ensuring code q
 
 1. **Environment Detection**: Checks for sandbox environment if `--sandbox-only`
 2. **Context Loading**: Loads project context (from `--project-context` globs) and user context (from `.agent-precommit/user-context.json`)
-3. **Git Status Collection**: Gathers staged changes via `git diff --cached`
+3. **Git Status Collection**: Gathers staged changes via `git diff --cached` (or range via `git diff <old> <new>` in `review-range`)
 4. **Preview Check**: If `--preview` flag is set, displays formatted prompt and exits (skips steps 5-8)
 5. **Request Summary**: Displays formatted summary of review configuration (objective, model, context files, user context) with timing note
 6. **AI Review**: Sends to model provider API with system prompt, context, and diff
@@ -103,6 +107,7 @@ The user context is stored in a JSON file at `.agent-precommit/user-context.json
 - `AGENT_PRECOMMIT_MODEL` - Model selection (required, no default)
 - `AGENT_PRECOMMIT_EXTRA_PARAMS` - JSON string for additional OpenAI parameters (optional)
 - `AGENT_PRECOMMIT_MAX_CONTEXT_BYTES` - Maximum bytes for project context files (defaults to 200000)
+- `AGENT_PRECOMMIT_MAX_DIFF_BYTES` - Maximum diff bytes allowed by host pre-receive hook before rejecting (default ~800000)
 
 ### Supported Providers
 
@@ -165,6 +170,66 @@ In sandbox, prevent access by default to:
 
 - `.agent-precommit/user-context.json` (readonly)
 - Other sensitive configuration files
+
+## Host-Side Push Review
+
+### pre-receive hook (host repo)
+
+Install a `pre-receive` hook to review pushed ranges and accept or reject updates:
+
+```
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Optional per-repo context to send with every review
+PROJECT_CONTEXT=( "**/*.md" "package.json" )
+
+fail=false
+
+while read -r old new ref; do
+  # Skip deletes
+  if [[ "$new" == 0000000000000000000000000000000000000000 ]]; then
+    continue
+  fi
+
+  echo "agent-precommit: reviewing $ref $(git rev-parse --short \"$old\")..$(git rev-parse --short \"$new\")"
+
+  # Bound prompt size/latency (default ~0.8MB). Treat new-branch pushes as empty tree base.
+  base="$old"
+  if [[ "$old" == 0000000000000000000000000000000000000000 ]]; then
+    # Ensure the empty tree object exists in the object database
+    base=$(git hash-object -t tree -w /dev/null)
+  fi
+  bytes=$(git diff --patch --binary "$base" "$new" | wc -c | awk '{print $1}')
+  max="${AGENT_PRECOMMIT_MAX_DIFF_BYTES:-800000}"
+  if (( bytes > max )); then
+    echo >&2 "agent-precommit: diff for $ref is ${bytes} bytes (max ${max}). Split this push into smaller chunks."
+    fail=true
+    continue
+  fi
+
+  if ! agent-precommit review-range "$old" "$new" --ref "$ref" \
+       "${PROJECT_CONTEXT[@]/#/--project-context }"; then
+    fail=true
+  fi
+done
+
+$fail && exit 1 || exit 0
+```
+
+Make it executable: `chmod +x .git/hooks/pre-receive`.
+
+Notes:
+- Runs in the host checkout (push target). In sandbox, `.git/hooks` is read-only.
+- Aggregates all ref updates; for per-ref isolation consider the `update` hook.
+
+### Suggested sandbox pre-commit usage
+
+Keep local hooks fast and non-blocking for agents:
+
+```
+agent-precommit --sandbox-only --preview [--project-context ...]
+```
 
 ## Preview Mode
 

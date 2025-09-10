@@ -52,6 +52,9 @@ async function main() {
         type: "string",
         short: "m",
       },
+      ref: {
+        type: "string",
+      },
       force: {
         type: "boolean",
         default: false,
@@ -99,6 +102,39 @@ async function main() {
       const errorMessage = error instanceof Error ? error.message : String(error);
       console.error(chalk.red(errorMessage));
       process.exit(1);
+    }
+  } else if (command === "review-range") {
+    try {
+      const [, ...rest] = args.positionals;
+      const oldRef = rest[0];
+      const newRef = rest[1];
+      const ref = args.values.ref as string | undefined;
+
+      if (!oldRef || !newRef) {
+        console.error(chalk.red("Usage: agent-precommit review-range <old> <new> [--ref <ref>]"));
+        process.exit(2);
+      }
+
+      const result = await reviewRange({
+        old: oldRef,
+        new: newRef,
+        ref,
+        objective: args.values.objective,
+        "project-context": args.values["project-context"],
+        preview: args.values.preview,
+      });
+
+      if (result.kind === "preview-shown" || result.kind === "no-changes") {
+        process.exit(0);
+      }
+      if (result.kind === "review-done" && !result.pass) {
+        process.exit(1);
+      }
+      process.exit(0);
+    } catch (error) {
+      console.error(chalk.red("Unhandled error in review-range"));
+      console.error(error);
+      process.exit(2);
     }
   } else {
     const result = await review(args.values);
@@ -266,7 +302,7 @@ async function review(args: {
     return { kind: "skipped" };
   }
 
-  const [gitStatus, diff] = await getGitContext();
+  const [gitStatus, diff] = await getGitContextFromIndex();
 
   if (!diff.trim()) {
     console.log("No changes to review");
@@ -284,7 +320,7 @@ async function review(args: {
   }
 
   // Print request summary
-  await printRequestSummary(args.objective, projectContext);
+  await printRequestSummary("Requesting review of staged changes", args.objective, projectContext);
 
   const reviewResponse = await spinner(() => requestReview(messages));
 
@@ -315,10 +351,11 @@ async function buildMessages(
   gitStatus: string,
   diff: string,
   projectContext: string,
+  ref?: string,
 ): Promise<Messages> {
   const systemPrompt = await getSystemPrompt(projectContext);
 
-  const userMessage = `${objective ? `OBJECTIVE:\n${objective}\n\n` : ""}GIT STATUS:
+  const userMessage = `${objective ? `OBJECTIVE:\n${objective}\n\n` : ""}${ref ? `REF:\n${ref}\n\n` : ""}GIT STATUS:
 ${gitStatus}
 
 DIFF TO REVIEW:
@@ -333,13 +370,14 @@ Review this diff, and be uncompromising about quality standards.`;
  * Print a summary of the request configuration before starting the review
  */
 async function printRequestSummary(
+  header: string,
   objective: string | undefined,
   projectContext: { contextFiles: string[]; formattedContents: string },
 ): Promise<void> {
   const userContext = await getUserContext();
   const model = process.env.AGENT_PRECOMMIT_MODEL;
 
-  console.log(chalk.cyan("\n\nRequesting review of staged changes"));
+  console.log(chalk.cyan("\n\n" + header));
 
   if (objective) {
     console.log(chalk.cyan(`Objective: `) + objective);
@@ -381,17 +419,132 @@ async function showPreview(messages: Messages): Promise<void> {
 }
 
 /**
+ * Run a review over a pushed range <old>..<new>.
+ */
+async function reviewRange(args: {
+  old: string;
+  new: string;
+  ref?: string;
+  objective?: string;
+  "project-context"?: string[];
+  preview?: boolean;
+}): Promise<{ kind: "preview-shown" } | { kind: "no-changes" } | { kind: "review-done"; pass: boolean }> {
+  const { old, new: nu, ref } = args;
+
+  // Build an inferred objective if not provided, based on commit subjects
+  let objective = args.objective;
+  if (!objective) {
+    try {
+      const ZERO = "0000000000000000000000000000000000000000";
+      if (old !== ZERO) {
+        // Use ':' as a safe separator inside --pretty to avoid shell splitting
+        const log = await $`git log --pretty=format:%h:%s ${old}..${nu}`;
+        const lines = log.stdout
+          .split("\n")
+          .map((l) => l.trim())
+          .filter(Boolean)
+          .slice(0, 50);
+        if (lines.length > 0) {
+          // Render as "hash subject" by replacing the first ':' with a space
+          const rendered = lines.map((l) => {
+            const once = l.replace(":", " ");
+            return once.length > 120 ? once.slice(0, 117) + "…" : once;
+          });
+          objective = `Inferred from pushed commits:\n- ${rendered.join("\n- ")}`;
+        } else if (old === ZERO) {
+          objective = "New branch push";
+        }
+      }
+    } catch {
+      // ignore log errors
+    }
+  }
+
+  const [gitStatus, diff] = await getGitContextFromRange(old, nu);
+  if (!diff.trim()) {
+    console.log("No changes to review");
+    return { kind: "no-changes" };
+  }
+
+  const ZERO = "0000000000000000000000000000000000000000";
+  const shortOld = old === ZERO ? "∅" : (await $`git rev-parse --short ${old}`).stdout.trim();
+  const shortNew = (await $`git rev-parse --short ${nu}`).stdout.trim();
+  const header = `Requesting review of pushed range ${shortOld}..${shortNew}${ref ? ` on ${ref}` : ""}`;
+
+  const projectContext = await getProjectContext(args["project-context"]);
+  const messages = await buildMessages(objective, gitStatus, diff, projectContext.formattedContents, ref);
+
+  if (args.preview) {
+    console.log("");
+    await printRequestSummary(header, objective, projectContext);
+    await showPreview(messages);
+    return { kind: "preview-shown" };
+  }
+
+  await printRequestSummary(header, objective, projectContext);
+  const reviewResponse = await spinner(() => requestReview(messages));
+
+  const userContext = await getUserContext();
+  const reviewData: ReviewData = {
+    timestamp: new Date().toISOString(),
+    objective,
+    userContext: userContext?.message,
+    projectContext: projectContext.formattedContents,
+    gitStatus,
+    gitDiff: diff,
+    review: reviewResponse.result,
+    rawRequest: reviewResponse.rawRequest,
+    rawResponse: reviewResponse.rawResponse,
+  };
+  await saveReview(reviewData);
+  renderReview(reviewData);
+
+  return { kind: "review-done", pass: reviewResponse.result.pass };
+}
+
+/**
  * Get the current git status and staged diff.
  */
-async function getGitContext(): Promise<[string, string]> {
+async function getGitContextFromIndex(): Promise<[string, string]> {
   const gitStatus = await $`git status --porcelain`;
   const stagedDiff = await $`git diff --staged`;
   return [gitStatus.stdout, stagedDiff.stdout];
 }
 
+/**
+ * Get git status and diff for a specific range old..new.
+ */
+async function getGitContextFromRange(oldRef: string, newRef: string): Promise<[string, string]> {
+  const ZERO = "0000000000000000000000000000000000000000";
+  const base = oldRef === ZERO ? (await $`git hash-object -t tree -w /dev/null`).stdout.trim() : oldRef;
+
+  const status = await $`git diff --no-ext-diff --no-color --name-status ${base} ${newRef}`;
+  const diff = await $`git diff --no-ext-diff --no-color --patch --binary ${base} ${newRef}`;
+  return [status.stdout, diff.stdout];
+}
+
 async function getDataDir(): Promise<string> {
-  const repoRoot = await $`git rev-parse --show-toplevel`;
-  return path.join(repoRoot.stdout.trim(), ".agent-precommit");
+  try {
+    const isBare = (await $`git rev-parse --is-bare-repository`).stdout.trim() === "true";
+    if (isBare) {
+      const gitDir = (await $`git rev-parse --git-dir`).stdout.trim();
+      return path.join(gitDir, ".agent-precommit");
+    } else {
+      const repoRoot = await $`git rev-parse --show-toplevel`;
+      return path.join(repoRoot.stdout.trim(), ".agent-precommit");
+    }
+  } catch (err) {
+    // Deterministic fallback: place data dir under current working directory
+    console.warn(
+      chalk.yellow(
+        `Warning: git rev-parse failed (${err instanceof Error ? err.message : String(err)}). Falling back to ${path.join(
+          process.cwd(),
+          ".agent-precommit",
+        )}`,
+      ),
+    );
+    return path.join(process.cwd(), ".agent-precommit");
+  }
 }
 
 async function getProjectContext(globs?: string[]): Promise<{
