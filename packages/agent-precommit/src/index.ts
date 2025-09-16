@@ -8,7 +8,7 @@ import * as path from "path";
 import { $, chalk, spinner } from "zx";
 import { fileURLToPath } from "url";
 import OpenAI from "openai";
-import { parseArgs } from "util";
+import { parseArgs, type ParseArgsOptionsConfig } from "util";
 import { loadEnvFile } from "process";
 import { glob } from "node:fs/promises";
 
@@ -43,44 +43,203 @@ interface Messages {
 
 const CONTEXT_FILE = "user-context.json";
 
+type OptionSpec = {
+  type: "string" | "boolean";
+  short?: string;
+  multiple?: boolean;
+  default?: string | boolean | string[] | boolean[];
+  desc: string;
+};
+
+type CommandSpec<V> = {
+  summary: string;
+  usage?: string[];
+  run: (ctx: { args: { positionals: string[]; values: V } }) => Promise<void> | void;
+};
+
+type PrecommitValues = {
+  objective?: string;
+  ref?: string;
+  force: boolean;
+  "sandbox-only": boolean;
+  clear: boolean;
+  show: boolean;
+  "project-context"?: string[];
+  preview: boolean;
+  help: boolean;
+};
+
+const CLI_OPTIONS: Record<string, OptionSpec> = {
+  objective: {
+    type: "string",
+    short: "m",
+    desc: "Objective hint to guide the review",
+  },
+  ref: { type: "string", desc: "Git ref to compare against (review-range)" },
+  force: { type: "boolean", default: false, desc: "Force init; preserve .env and reviews" },
+  "sandbox-only": { type: "boolean", default: false, desc: "Run only inside agent-sandbox" },
+  clear: { type: "boolean", default: false, desc: "Clear saved user context" },
+  show: { type: "boolean", default: false, desc: "Show saved user context" },
+  "project-context": { type: "string", multiple: true, desc: "Extra project files to include" },
+  preview: { type: "boolean", default: false, desc: "Preview system+user messages then exit" },
+  help: { type: "boolean", short: "h", default: false, desc: "Show help" },
+};
+
+const COMMANDS: Record<string, CommandSpec<PrecommitValues>> = {
+  review: {
+    summary: "Review staged changes (default)",
+    usage: ["agent-precommit [--objective <text>] [--project-context <glob>...] [--preview]"],
+    run: async ({ args }) => {
+      const result = await review(args.values);
+      if (result.kind === "skipped" || result.kind === "no-changes" || result.kind === "preview-shown") {
+        process.exit(0);
+      } else if (result.kind === "review-done" && !result.pass) {
+        process.exit(1);
+      }
+    },
+  },
+  init: {
+    summary: "Initialize .agent-precommit in repo",
+    usage: ["agent-precommit init [--force]"],
+    run: async ({ args }) => {
+      await init({ force: args.values.force });
+    },
+  },
+  context: {
+    summary: "Manage user context for reviews",
+    usage: ["agent-precommit context --show", "agent-precommit context --clear", "agent-precommit context <message>"],
+    run: async ({ args }) => {
+      await handleContext(args.positionals.slice(1), args.values);
+    },
+  },
+  "show-review": {
+    summary: "Show a saved review by timestamp",
+    usage: ["agent-precommit show-review <timestamp>"],
+    run: async ({ args }) => {
+      try {
+        await showReview(args.positionals[1]);
+        process.exit(0);
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        console.error(chalk.red(errorMessage));
+        process.exit(1);
+      }
+    },
+  },
+  "review-range": {
+    summary: "Review changes between two refs",
+    usage: [
+      "agent-precommit review-range <old> <new> [--ref <ref>] [--objective <text>] [--project-context <glob>...] [--preview]",
+    ],
+    run: async ({ args }) => {
+      try {
+        const [, ...rest] = args.positionals;
+        const oldRef = rest[0];
+        const newRef = rest[1];
+        const ref = args.values.ref as string | undefined;
+
+        if (!oldRef || !newRef) {
+          console.error(chalk.red("Usage: agent-precommit review-range <old> <new> [--ref <ref>]"));
+          process.exit(2);
+        }
+
+        const result = await reviewRange({
+          old: oldRef,
+          new: newRef,
+          ref,
+          objective: args.values.objective,
+          "project-context": args.values["project-context"],
+          preview: args.values.preview,
+        });
+
+        if (result.kind === "preview-shown" || result.kind === "no-changes") {
+          process.exit(0);
+        }
+        if (result.kind === "review-done" && !result.pass) {
+          process.exit(1);
+        }
+        process.exit(0);
+      } catch (error) {
+        console.error(chalk.red("Unhandled error in review-range"));
+        console.error(error);
+        process.exit(2);
+      }
+    },
+  },
+};
+
+function toParseArgsOptions(options: Record<string, OptionSpec>): ParseArgsOptionsConfig {
+  type ArgOpt = {
+    type: "string" | "boolean";
+    short?: string;
+    multiple?: boolean;
+    default?: string | boolean | string[] | boolean[];
+  };
+  const out: Partial<ParseArgsOptionsConfig> = {};
+  for (const [k, v] of Object.entries(options)) {
+    const conf: ArgOpt = { type: v.type };
+    if (v.short !== undefined) conf.short = v.short;
+    if (v.multiple !== undefined) conf.multiple = v.multiple;
+    if (v.default !== undefined) conf.default = v.default;
+    out[k] = conf as unknown as ParseArgsOptionsConfig[string];
+  }
+  return out as ParseArgsOptionsConfig;
+}
+
+function printHelp(command?: string) {
+  const header = "agent-precommit";
+  if (!command) {
+    console.log(`${header} - AI-powered precommit review`);
+    console.log("");
+    console.log("Usage: agent-precommit [command] [options]");
+    console.log("");
+    console.log("Commands:");
+    const entries = Object.entries(COMMANDS);
+    const namePad = Math.max(...entries.map(([n]) => n.length));
+    for (const [name, c] of entries) {
+      console.log(`  ${name.padEnd(namePad)}  ${c.summary}`);
+    }
+    console.log("  help            Show help (also -h, --help)");
+    console.log("");
+    console.log("Options:");
+    for (const [name, spec] of Object.entries(CLI_OPTIONS)) {
+      const flags = [spec.short ? `-${spec.short}` : null, `--${name}`].filter(Boolean).join(", ");
+      console.log(`  ${flags.padEnd(18)} ${spec.desc}`);
+    }
+    console.log("");
+    console.log("Default command: review");
+  } else {
+    const c = COMMANDS[command];
+    if (!c) {
+      console.error(chalk.red(`Unknown command: ${command}`));
+      console.log("Use --help to see available commands.");
+      process.exit(2);
+    }
+    console.log(`${header} ${command} - ${c.summary}`);
+    console.log("");
+    if (c.usage && c.usage.length) {
+      console.log("Usage:");
+      for (const u of c.usage) console.log(`  ${u}`);
+      console.log("");
+    }
+    console.log("Options:");
+    for (const [name, spec] of Object.entries(CLI_OPTIONS)) {
+      const flags = [spec.short ? `-${spec.short}` : null, `--${name}`].filter(Boolean).join(", ");
+      console.log(`  ${flags.padEnd(18)} ${spec.desc}`);
+    }
+  }
+}
+
 async function main() {
-  const args = parseArgs({
+  const parsed = parseArgs({
     args: process.argv.slice(2),
     allowPositionals: true,
-    options: {
-      objective: {
-        type: "string",
-        short: "m",
-      },
-      ref: {
-        type: "string",
-      },
-      force: {
-        type: "boolean",
-        default: false,
-      },
-      "sandbox-only": {
-        type: "boolean",
-        default: false,
-      },
-      clear: {
-        type: "boolean",
-        default: false,
-      },
-      show: {
-        type: "boolean",
-        default: false,
-      },
-      "project-context": {
-        type: "string",
-        multiple: true,
-      },
-      preview: {
-        type: "boolean",
-        default: false,
-      },
-    },
+    options: toParseArgsOptions(CLI_OPTIONS),
   });
+  const args: { positionals: string[]; values: PrecommitValues } = parsed as unknown as {
+    positionals: string[];
+    values: PrecommitValues;
+  };
 
   for (const env of [path.join(await getDataDir(), ".env"), ".env"]) {
     if (fs.existsSync(env)) {
@@ -88,62 +247,17 @@ async function main() {
     }
   }
 
-  const command = args.positionals[0];
+  const positional = args.positionals[0];
+  const wantsHelp = args.values.help || positional === "help";
+  const helpFor = wantsHelp ? args.positionals[1] : undefined;
 
-  if (command === "init") {
-    await init({ force: args.values.force });
-  } else if (command === "context") {
-    await handleContext(args.positionals.slice(1), args.values);
-  } else if (command === "show-review") {
-    try {
-      await showReview(args.positionals[1]);
-      process.exit(0);
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      console.error(chalk.red(errorMessage));
-      process.exit(1);
-    }
-  } else if (command === "review-range") {
-    try {
-      const [, ...rest] = args.positionals;
-      const oldRef = rest[0];
-      const newRef = rest[1];
-      const ref = args.values.ref as string | undefined;
-
-      if (!oldRef || !newRef) {
-        console.error(chalk.red("Usage: agent-precommit review-range <old> <new> [--ref <ref>]"));
-        process.exit(2);
-      }
-
-      const result = await reviewRange({
-        old: oldRef,
-        new: newRef,
-        ref,
-        objective: args.values.objective,
-        "project-context": args.values["project-context"],
-        preview: args.values.preview,
-      });
-
-      if (result.kind === "preview-shown" || result.kind === "no-changes") {
-        process.exit(0);
-      }
-      if (result.kind === "review-done" && !result.pass) {
-        process.exit(1);
-      }
-      process.exit(0);
-    } catch (error) {
-      console.error(chalk.red("Unhandled error in review-range"));
-      console.error(error);
-      process.exit(2);
-    }
-  } else {
-    const result = await review(args.values);
-    if (result.kind === "skipped" || result.kind === "no-changes" || result.kind === "preview-shown") {
-      process.exit(0);
-    } else if (result.kind === "review-done" && !result.pass) {
-      process.exit(1);
-    }
+  if (wantsHelp) {
+    printHelp(helpFor);
+    process.exit(0);
   }
+
+  const cmdName = positional && COMMANDS[positional] ? positional : "review";
+  await COMMANDS[cmdName].run({ args });
 }
 
 async function init(args: { force: boolean }) {

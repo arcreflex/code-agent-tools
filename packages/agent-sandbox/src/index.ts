@@ -1,5 +1,5 @@
 import path from "node:path";
-import { parseArgs } from "util";
+import { parseArgs, type ParseArgsOptionsConfig } from "util";
 import { $, chalk } from "zx";
 import fs from "node:fs";
 import os from "node:os";
@@ -14,143 +14,284 @@ const __dirname = new URL(".", import.meta.url).pathname;
 const configVolume = "agent-sandbox-claude-code-config";
 const codexConfigVolume = "agent-sandbox-codex-config";
 
-async function main() {
-  const args = parseArgs({
-    allowPositionals: true,
-    options: {
-      force: {
-        type: "boolean",
-        default: false,
-      },
-      auth: {
-        type: "boolean",
-        default: false,
-      },
-      branch: {
-        type: "string",
-      },
-      "base-tag": {
-        type: "string",
-        default: "latest",
-      },
-      build: {
-        type: "boolean",
-      },
-      tag: {
-        type: "string",
-        default: "latest",
-      },
-      "claude-code-version": {
-        type: "string",
-        default: "latest",
-      },
-      "codex-version": {
-        type: "string",
-        default: "latest",
-      },
-      "git-delta-version": {
-        type: "string",
-        default: "0.18.2",
-      },
-      "ast-grep-version": {
-        type: "string",
-        default: "latest",
-      },
-      root: {
-        type: "boolean",
-        default: false,
-      },
-    },
-  });
+type OptionSpec = {
+  type: "string" | "boolean";
+  default?: string | boolean | string[] | boolean[];
+  desc: string;
+  short?: string;
+};
 
-  if (args.positionals[0] === "build-base") {
-    await buildBase({
-      tag: args.values.tag,
-      claudeCodeVersion: args.values["claude-code-version"],
-      codexVersion: args.values["codex-version"],
-      gitDeltaVersion: args.values["git-delta-version"],
-      astGrepVersion: args.values["ast-grep-version"],
-    });
-  } else if (args.positionals[0] === "build") {
-    const localWorkspaceFolder = args.positionals[1] || process.cwd();
-    await build({
-      localWorkspaceFolder,
-      baseTag: args.values["base-tag"],
-    });
-  } else if (args.positionals[0] === "init") {
-    const localWorkspaceFolder = args.positionals[1] || process.cwd();
-    await init({ localWorkspaceFolder, force: args.values.force });
-  } else if (args.positionals[0] === "volume") {
-    console.log(configVolume);
-  } else if (args.positionals[0] === "restart") {
-    const localWorkspaceFolder = args.positionals[1] || process.cwd();
-    await start({
-      localWorkspaceFolder,
-      restart: true,
-      build: !!args.values.build,
-      branch: args.values.branch,
-      baseTag: args.values["base-tag"],
-    });
-  } else if (args.positionals[0] === "start") {
-    const localWorkspaceFolder = args.positionals[1] || process.cwd();
-    await start({
-      localWorkspaceFolder,
-      restart: false,
-      build: !!args.values.build,
-      branch: args.values.branch,
-      baseTag: args.values["base-tag"],
-    });
-  } else if (args.positionals[0] === "stop") {
-    const localWorkspaceFolder = args.positionals[1] || process.cwd();
-    await stop({ localWorkspaceFolder, branch: args.values.branch });
-  } else if (args.positionals[0] === "shell") {
-    const localWorkspaceFolder = args.positionals[1] || process.cwd();
-    await shell({
-      localWorkspaceFolder,
-      restart: !!args.values.build,
-      build: !!args.values.build,
-      branch: args.values.branch,
-      baseTag: args.values["base-tag"],
-    });
-  } else if (args.positionals[0] === "show-run") {
-    const localWorkspaceFolder = args.positionals[1] || process.cwd();
-    await showRun({
-      localWorkspaceFolder,
-      branch: args.values.branch,
-      baseTag: args.values["base-tag"],
-    });
-  } else if (args.positionals[0] === "checkout") {
-    const branch = args.positionals[1];
-    if (!branch) {
-      console.error("Usage: agent-sandbox checkout <branch> [--base-tag <tag>]");
-      process.exit(1);
-    }
-    const localWorkspaceFolder = process.cwd();
-    await ensureShelfAndWorktree({
-      localWorkspaceFolder,
-      branch,
-      baseTag: args.values["base-tag"],
-    });
-    console.log(chalk.green(`Provisioned worktree for '${branch}'.`));
-  } else if (args.positionals[0] === "list") {
-    await listContainers();
-  } else if (args.positionals[0] === "admin") {
-    const localWorkspaceFolder = args.positionals[1] || process.cwd();
-    await admin({ localWorkspaceFolder, root: !!args.values.root, build: !!args.values.build });
-  } else if (args.positionals[0] === "codex-init-config") {
-    await codexInitConfig({ auth: args.values.auth, force: args.values.force });
-  } else if (args.positionals[0] === "codex-logout") {
-    await codexLogout();
-  } else {
-    const localWorkspaceFolder = process.cwd();
-    await shell({
-      localWorkspaceFolder,
-      restart: !!args.values.build,
-      build: !!args.values.build,
-      branch: args.values.branch,
-      baseTag: args.values["base-tag"],
-    });
+type CommandSpec<V> = {
+  summary: string;
+  usage?: string[];
+  run: (ctx: { args: { positionals: string[]; values: V } }) => Promise<void> | void;
+};
+
+type SandboxValues = {
+  force: boolean;
+  auth: boolean;
+  branch?: string;
+  "base-tag": string;
+  build?: boolean;
+  tag: string;
+  "claude-code-version": string;
+  "codex-version": string;
+  "git-delta-version": string;
+  "ast-grep-version": string;
+  root: boolean;
+  help: boolean;
+};
+
+const CLI_OPTIONS: Record<string, OptionSpec> = {
+  force: { type: "boolean", default: false, desc: "Force overwrite existing config" },
+  auth: { type: "boolean", default: false, desc: "Initialize auth (Codex) when creating config" },
+  branch: { type: "string", desc: "Git branch to target for container name" },
+  "base-tag": { type: "string", default: "latest", desc: "Base image tag to use" },
+  build: { type: "boolean", desc: "Build images before running" },
+  tag: { type: "string", default: "latest", desc: "Tag for base images (build-base)" },
+  "claude-code-version": { type: "string", default: "latest", desc: "Version of @anthropic-ai/claude-code" },
+  "codex-version": { type: "string", default: "latest", desc: "Version of codex-cli to install" },
+  "git-delta-version": { type: "string", default: "0.18.2", desc: "Version of git-delta to install" },
+  "ast-grep-version": { type: "string", default: "latest", desc: "Version of ast-grep to install" },
+  root: { type: "boolean", default: false, desc: "Run admin command as root" },
+  help: { type: "boolean", default: false, desc: "Show help", short: "h" },
+};
+
+const COMMANDS: Record<string, CommandSpec<SandboxValues>> = {
+  "build-base": {
+    summary: "Build base Docker image used by sandboxes",
+    usage: [
+      "agent-sandbox build-base [--tag <tag>] [--claude-code-version <ver>] [--codex-version <ver>] [--git-delta-version <ver>] [--ast-grep-version <ver>]",
+    ],
+    run: async ({ args }) => {
+      await buildBase({
+        tag: args.values.tag,
+        claudeCodeVersion: args.values["claude-code-version"],
+        codexVersion: args.values["codex-version"],
+        gitDeltaVersion: args.values["git-delta-version"],
+        astGrepVersion: args.values["ast-grep-version"],
+      });
+    },
+  },
+  build: {
+    summary: "Build a sandbox image for current workspace",
+    usage: ["agent-sandbox build [<path>] [--base-tag <tag>]"],
+    run: async ({ args }) => {
+      const localWorkspaceFolder = args.positionals[1] || process.cwd();
+      await build({ localWorkspaceFolder, baseTag: args.values["base-tag"] });
+    },
+  },
+  init: {
+    summary: "Initialize sandbox config in workspace",
+    usage: ["agent-sandbox init [<path>] [--force]"],
+    run: async ({ args }) => {
+      const localWorkspaceFolder = args.positionals[1] || process.cwd();
+      await init({ localWorkspaceFolder, force: !!args.values.force });
+    },
+  },
+  volume: {
+    summary: "Print the name of the Docker volume used for config",
+    usage: ["agent-sandbox volume"],
+    run: async () => {
+      console.log(configVolume);
+    },
+  },
+  restart: {
+    summary: "Restart the sandbox container",
+    usage: ["agent-sandbox restart [<path>] [--build] [--branch <name>] [--base-tag <tag>]"],
+    run: async ({ args }) => {
+      const localWorkspaceFolder = args.positionals[1] || process.cwd();
+      await start({
+        localWorkspaceFolder,
+        restart: true,
+        build: !!args.values.build,
+        branch: args.values.branch,
+        baseTag: args.values["base-tag"],
+      });
+    },
+  },
+  start: {
+    summary: "Start the sandbox container",
+    usage: ["agent-sandbox start [<path>] [--build] [--branch <name>] [--base-tag <tag>]"],
+    run: async ({ args }) => {
+      const localWorkspaceFolder = args.positionals[1] || process.cwd();
+      await start({
+        localWorkspaceFolder,
+        restart: false,
+        build: !!args.values.build,
+        branch: args.values.branch,
+        baseTag: args.values["base-tag"],
+      });
+    },
+  },
+  stop: {
+    summary: "Stop the sandbox container",
+    usage: ["agent-sandbox stop [<path>] [--branch <name>]"],
+    run: async ({ args }) => {
+      const localWorkspaceFolder = args.positionals[1] || process.cwd();
+      await stop({ localWorkspaceFolder, branch: args.values.branch });
+    },
+  },
+  shell: {
+    summary: "Open a shell in the sandbox (default)",
+    usage: ["agent-sandbox shell [<path>] [--build] [--branch <name>] [--base-tag <tag>]"],
+    run: async ({ args }) => {
+      const localWorkspaceFolder = args.positionals[1] || process.cwd();
+      await shell({
+        localWorkspaceFolder,
+        restart: !!args.values.build,
+        build: !!args.values.build,
+        branch: args.values.branch,
+        baseTag: args.values["base-tag"],
+      });
+    },
+  },
+  "show-run": {
+    summary: "Show the docker run command that would be used",
+    usage: ["agent-sandbox show-run [<path>] [--branch <name>] [--base-tag <tag>]"],
+    run: async ({ args }) => {
+      const localWorkspaceFolder = args.positionals[1] || process.cwd();
+      await showRun({
+        localWorkspaceFolder,
+        branch: args.values.branch,
+        baseTag: args.values["base-tag"],
+      });
+    },
+  },
+  checkout: {
+    summary: "Create a sandbox worktree for a branch",
+    usage: ["agent-sandbox checkout <branch> [--base-tag <tag>]"],
+    run: async ({ args }) => {
+      const branch = args.positionals[1];
+      if (!branch) {
+        console.error("Usage: agent-sandbox checkout <branch> [--base-tag <tag>]");
+        process.exit(1);
+      }
+      const localWorkspaceFolder = process.cwd();
+      await ensureShelfAndWorktree({
+        localWorkspaceFolder,
+        branch,
+        baseTag: args.values["base-tag"],
+      });
+      console.log(chalk.green(`Provisioned worktree for '${branch}'.`));
+    },
+  },
+  list: {
+    summary: "List running agent-sandbox containers",
+    usage: ["agent-sandbox list"],
+    run: async () => {
+      await listContainers();
+    },
+  },
+  admin: {
+    summary: "Open admin shell in sandbox",
+    usage: ["agent-sandbox admin [<path>] [--root] [--build]"],
+    run: async ({ args }) => {
+      const localWorkspaceFolder = args.positionals[1] || process.cwd();
+      await admin({
+        localWorkspaceFolder,
+        root: !!args.values.root,
+        build: !!args.values.build,
+      });
+    },
+  },
+  "codex-init-config": {
+    summary: "Initialize Codex config in shared volume",
+    usage: ["agent-sandbox codex-init-config [--auth] [--force]"],
+    run: async ({ args }) => {
+      await codexInitConfig({ auth: !!args.values.auth, force: !!args.values.force });
+    },
+  },
+  "codex-logout": {
+    summary: "Remove Codex auth from shared volume",
+    usage: ["agent-sandbox codex-logout"],
+    run: async () => {
+      await codexLogout();
+    },
+  },
+};
+
+function toParseArgsOptions(options: Record<string, OptionSpec>): ParseArgsOptionsConfig {
+  type ArgOpt = {
+    type: "string" | "boolean";
+    short?: string;
+    default?: string | boolean | string[] | boolean[];
+  };
+  const out: Partial<ParseArgsOptionsConfig> = {};
+  for (const [k, v] of Object.entries(options)) {
+    const conf: ArgOpt = { type: v.type };
+    if (v.short !== undefined) conf.short = v.short;
+    if (v.default !== undefined) conf.default = v.default;
+    out[k] = conf as unknown as ParseArgsOptionsConfig[string];
   }
+  return out as ParseArgsOptionsConfig;
+}
+
+function printHelp(command?: string) {
+  const header = "agent-sandbox";
+  if (!command) {
+    console.log(`${header} - Containerized sandbox for coding agents`);
+    console.log("");
+    console.log("Usage: agent-sandbox [command] [options]");
+    console.log("");
+    console.log("Commands:");
+    const entries = Object.entries(COMMANDS);
+    const namePad = Math.max(...entries.map(([n]) => n.length));
+    for (const [name, c] of entries) {
+      console.log(`  ${name.padEnd(namePad)}  ${c.summary}`);
+    }
+    console.log("  help            Show help (also -h, --help)");
+    console.log("");
+    console.log("Options:");
+    for (const [name, spec] of Object.entries(CLI_OPTIONS)) {
+      const flags = [spec.short ? `-${spec.short}` : null, `--${name}`].filter(Boolean).join(", ");
+      console.log(`  ${flags.padEnd(22)} ${spec.desc}`);
+    }
+    console.log("");
+    console.log("Default command: shell");
+  } else {
+    const c = COMMANDS[command];
+    if (!c) {
+      console.error(chalk.red(`Unknown command: ${command}`));
+      console.log("Use --help to see available commands.");
+      process.exit(2);
+    }
+    console.log(`${header} ${command} - ${c.summary}`);
+    console.log("");
+    if (c.usage && c.usage.length) {
+      console.log("Usage:");
+      for (const u of c.usage) console.log(`  ${u}`);
+      console.log("");
+    }
+    console.log("Options:");
+    for (const [name, spec] of Object.entries(CLI_OPTIONS)) {
+      const flags = [spec.short ? `-${spec.short}` : null, `--${name}`].filter(Boolean).join(", ");
+      console.log(`  ${flags.padEnd(22)} ${spec.desc}`);
+    }
+  }
+}
+
+async function main() {
+  const parsed = parseArgs({
+    allowPositionals: true,
+    options: toParseArgsOptions(CLI_OPTIONS),
+  });
+  const args: { positionals: string[]; values: SandboxValues } = parsed as unknown as {
+    positionals: string[];
+    values: SandboxValues;
+  };
+
+  const positional = args.positionals[0];
+  const wantsHelp = args.values.help || positional === "help";
+  const helpFor = wantsHelp ? args.positionals[1] : undefined;
+
+  if (wantsHelp) {
+    printHelp(helpFor);
+    process.exit(0);
+  }
+
+  const cmdName = positional && COMMANDS[positional] ? positional : "shell";
+  await COMMANDS[cmdName].run({ args });
 }
 
 function configPath(args: { localWorkspaceFolder: string }) {
