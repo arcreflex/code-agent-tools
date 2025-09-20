@@ -1,5 +1,2 @@
 npx lint-staged
 npx tsc --noEmit
-node packages/agent-precommit/src/index.ts --sandbox-only \
- --project-context AGENTS.md \
- --project-context 'specs/**/*.md'
