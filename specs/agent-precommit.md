@@ -36,6 +36,10 @@ Agent-precommit provides AI-powered code review for git commits, ensuring code q
   - Reviews the commit range `<old>..<new>` instead of staged changes
   - Intended for host-side hooks (e.g., `pre-receive`) to enforce review on push
   - Saves results under `.agent-precommit/reviews/` like normal reviews
+- **Pre-Receive Hook**: `agent-precommit pre-receive [--project-context <glob> ...] [--objective <message>] [--default-branch <name>] [--include <glob> ...] [--exclude <glob> ...] [--include-tags] [--max-diff-bytes <n>] [--continue-on-fail] [--preview]`
+  - Reads `old new ref` triplets from stdin (Git pre-receive semantics) or as positional triples for testing
+  - Filters refs (defaults to branches only), enforces a diff byte cap, and reviews each qualifying update via the same engine as `review-range`
+  - Aggregates outcomes across updates; fails the push if any review fails
 - **Sandbox-Only Mode**: `agent-precommit --sandbox-only`
   - Only runs when inside agent-sandbox environment
   - Exits 0 when not in sandbox
@@ -171,57 +175,50 @@ In sandbox, prevent access by default to:
 - `.agent-precommit/user-context.json` (readonly)
 - Other sensitive configuration files
 
-## Host-Side Push Review
+## Server-Side Pre-Receive
 
-### pre-receive hook (host repo)
+The `pre-receive` subcommand provides first-class server-side enforcement without custom bash.
 
-Install a `pre-receive` hook to review pushed ranges and accept or reject updates:
+### Behavior
+
+- Input: Consumes `old new ref` triplets from stdin (standard Git pre-receive). Also accepts positional triples for testing: `agent-precommit pre-receive <old> <new> <ref> [...]`.
+- Scope defaults:
+  - Includes branches: `refs/heads/*`
+  - Excludes tags: `refs/tags/*` (use `--include-tags` to include)
+- Ref deletions: Entries where `new` is all zeros are skipped (no content to review). File deletions within diffs are reviewed normally.
+- New branch pushes: Uses the merge-base with the repository's default branch as the base for review. The default branch is configurable via `--default-branch <name>` (defaults to `main`). If the branch cannot be resolved, falls back to using the empty tree as the base. This reviews only the content introduced relative to the default branch.
+- Diff size cap: Computes bytes via `git diff --patch --binary <base> <new> | wc -c` and rejects updates exceeding the cap.
+  - Threshold: `AGENT_PRECOMMIT_MAX_DIFF_BYTES` (default ~800000). Override via `--max-diff-bytes`.
+- Review engine: For each qualifying update, runs the same review flow as `review-range`, saving history under the repository’s `.agent-precommit/reviews/` (bare repos store this under `GIT_DIR/.agent-precommit`).
+- Aggregation: Fails the push if any reviewed update fails. Stops at first failure by default; `--continue-on-fail` processes all and reports a summary.
+- Errors: Network/provider and unexpected errors block the push.
+
+### Options
+
+- `--project-context <glob>` (repeatable): Additional repo files to include as review context.
+- `--objective <text>`: Applies to all updates; if omitted, objectives may be inferred from commit subjects.
+- `--default-branch <name>`: Branch used as base for new refs (default: `main`).
+- `--preview`: Prints the assembled system/user messages per update and exits 0 without API calls.
+- `--include <glob>` (repeatable): Additional ref patterns to include.
+- `--exclude <glob>` (repeatable): Ref patterns to exclude.
+- `--include-tags`: Convenience flag to include `refs/tags/*`.
+- `--max-diff-bytes <n>`: Override the diff size cap (falls back to `AGENT_PRECOMMIT_MAX_DIFF_BYTES`).
+- `--continue-on-fail`: Continue processing all updates, then exit 1 if any failed.
+
+### Minimal hook (host repo)
 
 ```
 #!/usr/bin/env bash
-set -euo pipefail
-
-# Optional per-repo context to send with every review
-PROJECT_CONTEXT=( "**/*.md" "package.json" )
-
-fail=false
-
-while read -r old new ref; do
-  # Skip deletes
-  if [[ "$new" == 0000000000000000000000000000000000000000 ]]; then
-    continue
-  fi
-
-  echo "agent-precommit: reviewing $ref $(git rev-parse --short \"$old\")..$(git rev-parse --short \"$new\")"
-
-  # Bound prompt size/latency (default ~0.8MB). Treat new-branch pushes as empty tree base.
-  base="$old"
-  if [[ "$old" == 0000000000000000000000000000000000000000 ]]; then
-    # Ensure the empty tree object exists in the object database
-    base=$(git hash-object -t tree -w /dev/null)
-  fi
-  bytes=$(git diff --patch --binary "$base" "$new" | wc -c | awk '{print $1}')
-  max="${AGENT_PRECOMMIT_MAX_DIFF_BYTES:-800000}"
-  if (( bytes > max )); then
-    echo >&2 "agent-precommit: diff for $ref is ${bytes} bytes (max ${max}). Split this push into smaller chunks."
-    fail=true
-    continue
-  fi
-
-  if ! agent-precommit review-range "$old" "$new" --ref "$ref" \
-       "${PROJECT_CONTEXT[@]/#/--project-context }"; then
-    fail=true
-  fi
-done
-
-$fail && exit 1 || exit 0
+exec agent-precommit pre-receive \
+  --project-context "**/*.md" \
+  --project-context "package.json"
 ```
 
 Make it executable: `chmod +x .git/hooks/pre-receive`.
 
 Notes:
-- Runs in the host checkout (push target). In sandbox, `.git/hooks` is read-only.
-- Aggregates all ref updates; for per-ref isolation consider the `update` hook.
+- Runs in the push target repository (often bare). In sandboxed local clones, `.git/hooks` may be read-only.
+- Reviews are saved under `.agent-precommit/reviews/` in the target repository (bare: `GIT_DIR/.agent-precommit/reviews/`).
 
 ### Suggested sandbox pre-commit usage
 
@@ -265,6 +262,9 @@ agent-precommit --preview --project-context "*.md" --project-context "package.js
 
 # Preview with a specific objective
 agent-precommit --preview -m "Implementing dark mode feature"
+
+# Preview inside pre-receive (no API calls, exit 0)
+git hook payload | agent-precommit pre-receive --preview
 ```
 
 ### Preview Mode Behavior
