@@ -8,12 +8,12 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build --workspace=packages/agent-precommit && npm run build --workspace=packages/agent-sandbox",
-    "build:precommit": "npm run build --workspace=packages/agent-precommit",
+    "build": "npm run build --workspace=packages/ai-review && npm run build --workspace=packages/agent-sandbox",
+    "build:ai-review": "npm run build --workspace=packages/ai-review",
     "build:sandbox": "npm run build --workspace=packages/agent-sandbox",
-    "publish:precommit": "npm run build:precommit && npm publish packages/agent-precommit",
+    "publish:ai-review": "npm run build:ai-review && npm publish packages/ai-review",
     "publish:sandbox": "npm run build:sandbox && npm publish packages/agent-sandbox",
-    "publish:all": "npm run build && npm publish packages/agent-precommit && npm publish packages/agent-sandbox",
+    "publish:all": "npm run build && npm publish packages/ai-review && npm publish packages/agent-sandbox",
     "lint": "eslint packages/*/",
     "lint:fix": "eslint packages/*/ --fix",
     "format": "prettier --write packages/*/",

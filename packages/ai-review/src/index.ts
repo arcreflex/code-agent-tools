@@ -57,6 +57,21 @@ type CommandSpec<V> = {
   run: (ctx: { args: { positionals: string[]; values: V } }) => Promise<void> | void;
 };
 
+const envFallbackNotified = new Set<string>();
+const getEnv = (primary: string, legacy?: string): string | undefined => {
+  const primaryValue = process.env[primary];
+  if (primaryValue !== undefined) return primaryValue;
+  if (legacy) {
+    const legacyValue = process.env[legacy];
+    if (legacyValue !== undefined && !envFallbackNotified.has(legacy)) {
+      console.warn(chalk.yellow(`Using deprecated ${legacy} environment variable; rename to ${primary}.`));
+      envFallbackNotified.add(legacy);
+    }
+    return legacyValue;
+  }
+  return undefined;
+};
+
 type PrecommitValues = {
   objective?: string;
   ref?: string;
@@ -104,7 +119,7 @@ const CLI_OPTIONS: Record<string, OptionSpec> = {
 const COMMANDS: Record<string, CommandSpec<PrecommitValues>> = {
   review: {
     summary: "Review staged changes (default)",
-    usage: ["agent-precommit [--objective <text>] [--project-context <glob>...] [--preview]"],
+    usage: ["ai-review [--objective <text>] [--project-context <glob>...] [--preview]"],
     run: async ({ args }) => {
       const result = await review(args.values);
       if (result.kind === "skipped" || result.kind === "no-changes" || result.kind === "preview-shown") {
@@ -115,22 +130,22 @@ const COMMANDS: Record<string, CommandSpec<PrecommitValues>> = {
     },
   },
   init: {
-    summary: "Initialize .agent-precommit in repo",
-    usage: ["agent-precommit init [--force]"],
+    summary: "Initialize .ai-review in repo",
+    usage: ["ai-review init [--force]"],
     run: async ({ args }) => {
       await init({ force: args.values.force });
     },
   },
   context: {
     summary: "Manage user context for reviews",
-    usage: ["agent-precommit context --show", "agent-precommit context --clear", "agent-precommit context <message>"],
+    usage: ["ai-review context --show", "ai-review context --clear", "ai-review context <message>"],
     run: async ({ args }) => {
       await handleContext(args.positionals.slice(1), args.values);
     },
   },
   "show-review": {
     summary: "Show a saved review by timestamp",
-    usage: ["agent-precommit show-review <timestamp>"],
+    usage: ["ai-review show-review <timestamp>"],
     run: async ({ args }) => {
       try {
         await showReview(args.positionals[1]);
@@ -145,7 +160,7 @@ const COMMANDS: Record<string, CommandSpec<PrecommitValues>> = {
   "review-range": {
     summary: "Review changes between two refs",
     usage: [
-      "agent-precommit review-range <old> <new> [--ref <ref>] [--objective <text>] [--project-context <glob>...] [--preview]",
+      "ai-review review-range <old> <new> [--ref <ref>] [--objective <text>] [--project-context <glob>...] [--preview]",
     ],
     run: async ({ args }) => {
       try {
@@ -155,7 +170,7 @@ const COMMANDS: Record<string, CommandSpec<PrecommitValues>> = {
         const ref = args.values.ref as string | undefined;
 
         if (!oldRef || !newRef) {
-          console.error(chalk.red("Usage: agent-precommit review-range <old> <new> [--ref <ref>]"));
+          console.error(chalk.red("Usage: ai-review review-range <old> <new> [--ref <ref>]"));
           process.exit(2);
         }
 
@@ -185,9 +200,9 @@ const COMMANDS: Record<string, CommandSpec<PrecommitValues>> = {
   "pre-receive": {
     summary: "Server-side hook. Review pushed updates from stdin",
     usage: [
-      "agent-precommit pre-receive [--project-context <glob> ...] [--objective <text>] [--default-branch <name>] [--include <glob> ...] [--exclude <glob> ...] [--include-tags] [--max-diff-bytes <n>] [--continue-on-fail] [--preview]",
-      "cat updates.txt | agent-precommit pre-receive",
-      "agent-precommit pre-receive <old> <new> <ref> [<old> <new> <ref> ...]",
+      "ai-review pre-receive [--project-context <glob> ...] [--objective <text>] [--default-branch <name>] [--include <glob> ...] [--exclude <glob> ...] [--include-tags] [--max-diff-bytes <n>] [--continue-on-fail] [--preview]",
+      "cat updates.txt | ai-review pre-receive",
+      "ai-review pre-receive <old> <new> <ref> [<old> <new> <ref> ...]",
     ],
     run: async ({ args }) => {
       try {
@@ -199,7 +214,7 @@ const COMMANDS: Record<string, CommandSpec<PrecommitValues>> = {
         const defaultBranch = opts["default-branch"] ?? "main";
         const continueOnFail = Boolean(opts["continue-on-fail"]);
 
-        const maxEnv = process.env.AGENT_PRECOMMIT_MAX_DIFF_BYTES;
+        const maxEnv = getEnv("AI_REVIEW_MAX_DIFF_BYTES", "AGENT_PRECOMMIT_MAX_DIFF_BYTES");
         const maxOverride = opts["max-diff-bytes"];
         const maxBytes = (() => {
           const v = maxOverride ?? maxEnv ?? "800000";
@@ -221,7 +236,7 @@ const COMMANDS: Record<string, CommandSpec<PrecommitValues>> = {
         }
 
         if (updates.length === 0) {
-          console.log(chalk.gray("agent-precommit: no updates provided to pre-receive"));
+          console.log(chalk.gray("ai-review: no updates provided to pre-receive"));
           process.exit(0);
         }
 
@@ -229,7 +244,7 @@ const COMMANDS: Record<string, CommandSpec<PrecommitValues>> = {
         updates = updates.filter((u) => matchesAny(u.ref, includePatterns) && !matchesAny(u.ref, excludePatterns));
 
         if (updates.length === 0) {
-          console.log(chalk.gray("agent-precommit: no updates matched filters"));
+          console.log(chalk.gray("ai-review: no updates matched filters"));
           process.exit(0);
         }
 
@@ -242,7 +257,7 @@ const COMMANDS: Record<string, CommandSpec<PrecommitValues>> = {
 
           const shortOld = u.old === ZERO ? "∅" : (await $`git rev-parse --short ${u.old}`).stdout.trim();
           const shortNew = (await $`git rev-parse --short ${u.newRef}`).stdout.trim();
-          console.log(`agent-precommit: reviewing ${u.ref} ${shortOld}..${shortNew}`);
+          console.log(`ai-review: reviewing ${u.ref} ${shortOld}..${shortNew}`);
 
           // Determine effective base for diff size and review-range
           const effectiveOld = u.old !== ZERO ? u.old : await determineNewRefBase(u.newRef, defaultBranch);
@@ -254,7 +269,7 @@ const COMMANDS: Record<string, CommandSpec<PrecommitValues>> = {
           if (bytes > maxBytes) {
             console.error(
               chalk.red(
-                `agent-precommit: diff for ${u.ref} is ${bytes} bytes (max ${maxBytes}). Split this push into smaller chunks.`,
+                `ai-review: diff for ${u.ref} is ${bytes} bytes (max ${maxBytes}). Split this push into smaller chunks.`,
               ),
             );
             anyFailed = true;
@@ -307,11 +322,11 @@ function toParseArgsOptions(options: Record<string, OptionSpec>): ParseArgsOptio
 }
 
 function printHelp(command?: string) {
-  const header = "agent-precommit";
+  const header = "ai-review";
   if (!command) {
     console.log(`${header} - AI-powered precommit review`);
     console.log("");
-    console.log("Usage: agent-precommit [command] [options]");
+    console.log("Usage: ai-review [command] [options]");
     console.log("");
     console.log("Commands:");
     const entries = Object.entries(COMMANDS);
@@ -402,7 +417,7 @@ async function init(args: { force: boolean }) {
     }
 
     if (args.force) {
-      console.log(chalk.yellow("Force reinitializing .agent-precommit directory"));
+      console.log(chalk.yellow("Force reinitializing .ai-review directory"));
       console.log(chalk.gray("Preserving: .env, user-context.json, and reviews/"));
 
       // Create temp directory to store preserved files
@@ -483,7 +498,7 @@ async function init(args: { force: boolean }) {
   }
 
   const gitignorePath = path.join(repoRoot.stdout.trim(), ".gitignore");
-  const gitignoreEntries = [".agent-precommit/reviews", ".agent-precommit/user-context.json"];
+  const gitignoreEntries = [".ai-review/reviews", ".ai-review/user-context.json"];
 
   let gitignoreContent = "";
   if (fs.existsSync(gitignorePath)) {
@@ -505,13 +520,13 @@ async function init(args: { force: boolean }) {
   }
 
   if (hadExistingDir && args.force) {
-    console.log(chalk.green(`✓ Reinitialized agent-precommit in ${dataDir}`));
+    console.log(chalk.green(`✓ Reinitialized ai-review in ${dataDir}`));
   } else {
-    console.log(chalk.green(`✓ Initialized agent-precommit in ${dataDir}`));
+    console.log(chalk.green(`✓ Initialized ai-review in ${dataDir}`));
   }
 
   const initIndex = process.argv.indexOf("init");
-  const command = initIndex > 0 ? process.argv.slice(0, initIndex).join(" ") : "agent-precommit";
+  const command = initIndex > 0 ? process.argv.slice(0, initIndex).join(" ") : "ai-review";
 
   if (!existingEnv) {
     console.log(chalk.yellow(`Set environment variables in ${dataDir}/.env and add:`));
@@ -532,7 +547,7 @@ async function review(args: {
   { kind: "skipped" } | { kind: "no-changes" } | { kind: "preview-shown" } | { kind: "review-done"; pass: boolean }
 > {
   if (args["sandbox-only"] && !fs.existsSync(`/.agent-sandbox`)) {
-    console.log(chalk.yellow(`Skipping agent-precommit review because /.agent-sandbox doesn't exist`));
+    console.log(chalk.yellow(`Skipping ai-review review because /.agent-sandbox doesn't exist`));
     return { kind: "skipped" };
   }
 
@@ -609,7 +624,7 @@ async function printRequestSummary(
   projectContext: { contextFiles: string[]; formattedContents: string },
 ): Promise<void> {
   const userContext = await getUserContext();
-  const model = process.env.AGENT_PRECOMMIT_MODEL;
+  const model = getEnv("AI_REVIEW_MODEL", "AGENT_PRECOMMIT_MODEL");
 
   console.log(chalk.cyan("\n\n" + header));
 
@@ -928,14 +943,14 @@ async function getDataDir(): Promise<string> {
     const isBare = (await $`git rev-parse --is-bare-repository`).stdout.trim() === "true";
     if (isBare) {
       const gitDir = (await $`git rev-parse --git-dir`).stdout.trim();
-      return path.join(gitDir, ".agent-precommit");
+      return path.join(gitDir, ".ai-review");
     }
 
     // In non-bare repos, hooks triggered during push execute in $GIT_DIR (inside .git),
     // where --show-toplevel may fail. Prefer show-toplevel, but derive from --git-dir if needed.
     try {
       const repoRoot = (await $`git rev-parse --show-toplevel`).stdout.trim();
-      if (repoRoot) return path.join(repoRoot, ".agent-precommit");
+      if (repoRoot) return path.join(repoRoot, ".ai-review");
     } catch {
       // fall through to derive from git-dir
     }
@@ -944,18 +959,18 @@ async function getDataDir(): Promise<string> {
     const gitDir = gitDirOut.stdout.trim();
     const absGitDir = path.isAbsolute(gitDir) ? gitDir : path.resolve(process.cwd(), gitDir);
     const repoRoot = path.dirname(absGitDir);
-    return path.join(repoRoot, ".agent-precommit");
+    return path.join(repoRoot, ".ai-review");
   } catch (err) {
     // Deterministic fallback: place data dir under current working directory
     console.warn(
       chalk.yellow(
         `Warning: git rev-parse failed (${err instanceof Error ? err.message : String(err)}). Falling back to ${path.join(
           process.cwd(),
-          ".agent-precommit",
+          ".ai-review",
         )}`,
       ),
     );
-    return path.join(process.cwd(), ".agent-precommit");
+    return path.join(process.cwd(), ".ai-review");
   }
 }
 
@@ -992,9 +1007,8 @@ async function getProjectContext(globs?: string[]): Promise<{
     };
   }
 
-  const MAX_CONTEXT_BYTES = process.env.AGENT_PRECOMMIT_MAX_CONTEXT_BYTES
-    ? parseInt(process.env.AGENT_PRECOMMIT_MAX_CONTEXT_BYTES, 10)
-    : 200000; // ~200KB limit to avoid overlong prompts
+  const maxContextEnv = getEnv("AI_REVIEW_MAX_CONTEXT_BYTES", "AGENT_PRECOMMIT_MAX_CONTEXT_BYTES");
+  const MAX_CONTEXT_BYTES = maxContextEnv ? parseInt(maxContextEnv, 10) : 200000; // ~200KB limit to avoid overlong prompts
 
   let totalBytes = 0;
   const contextSections: string[] = [];
@@ -1076,14 +1090,14 @@ async function handleContext(args: string[], options: { clear?: boolean; show?: 
   }
 
   // Join all positional args to handle both quoted and unquoted input:
-  // - Quoted: agent-precommit context "multi word message" -> ["multi word message"]
-  // - Unquoted: agent-precommit context multi word message -> ["multi", "word", "message"]
+  // - Quoted: ai-review context "multi word message" -> ["multi word message"]
+  // - Unquoted: ai-review context multi word message -> ["multi", "word", "message"]
   const message = args.join(" ").trim();
   if (!message) {
     console.error(chalk.red("Error: Please provide a context message"));
-    console.log("Usage: agent-precommit context <message>");
-    console.log("       agent-precommit context --show");
-    console.log("       agent-precommit context --clear");
+    console.log("Usage: ai-review context <message>");
+    console.log("       ai-review context --show");
+    console.log("       ai-review context --clear");
     process.exit(1);
   }
 
@@ -1161,12 +1175,12 @@ async function getSystemPrompt(projectContext: string): Promise<string> {
 async function requestReview(
   messages: Messages,
 ): Promise<{ result: ReviewResult; rawRequest: unknown; rawResponse: unknown }> {
-  const apiKey = process.env.AGENT_PRECOMMIT_OPENAI_KEY;
+  const apiKey = getEnv("AI_REVIEW_OPENAI_KEY", "AGENT_PRECOMMIT_OPENAI_KEY");
   if (!apiKey) {
-    throw new Error("Error: AGENT_PRECOMMIT_OPENAI_KEY environment variable not set");
+    throw new Error("Error: AI_REVIEW_OPENAI_KEY (or legacy AGENT_PRECOMMIT_OPENAI_KEY) environment variable not set");
   }
 
-  const baseURL = process.env.AGENT_PRECOMMIT_OPENAI_BASE_URL || "https://api.openai.com/v1";
+  const baseURL = getEnv("AI_REVIEW_OPENAI_BASE_URL", "AGENT_PRECOMMIT_OPENAI_BASE_URL") || "https://api.openai.com/v1";
 
   const openai = new OpenAI({
     apiKey,
@@ -1198,14 +1212,13 @@ async function requestReview(
     },
   ];
 
-  const model = process.env.AGENT_PRECOMMIT_MODEL;
+  const model = getEnv("AI_REVIEW_MODEL", "AGENT_PRECOMMIT_MODEL");
   if (!model) {
-    throw new Error("Error: AGENT_PRECOMMIT_MODEL environment variable not set");
+    throw new Error("Error: AI_REVIEW_MODEL (or legacy AGENT_PRECOMMIT_MODEL) environment variable not set");
   }
 
-  const extraParams = process.env.AGENT_PRECOMMIT_EXTRA_PARAMS
-    ? JSON.parse(process.env.AGENT_PRECOMMIT_EXTRA_PARAMS)
-    : {};
+  const extraParamsRaw = getEnv("AI_REVIEW_EXTRA_PARAMS", "AGENT_PRECOMMIT_EXTRA_PARAMS");
+  const extraParams = extraParamsRaw ? JSON.parse(extraParamsRaw) : {};
 
   const requestPayload = {
     model,
@@ -1360,7 +1373,7 @@ function renderReview(reviewData: ReviewData): void {
     `\nPlease address any valid points in the feedback above.
 
 If you feel the reviewer might be missing important context, you can ask the human user
-to provide additional context with "agent-precommit context <message>" and then resubmit
+to provide additional context with "ai-review context <message>" and then resubmit
 your changes.`,
   );
 }

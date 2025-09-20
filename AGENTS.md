@@ -10,7 +10,7 @@ Detailed specifications for each domain live in the `specs/` directory.
 | --------------- | ------------------------------------------------ | ------------------------------------------- |
 | Architecture    | Overall system architecture and design decisions | [Architecture](specs/architecture.md)       |
 | Agent Sandbox   | Docker container sandbox implementation details  | [Agent Sandbox](specs/agent-sandbox.md)     |
-| Agent Precommit | AI-powered code review system specification      | [Agent Precommit](specs/agent-precommit.md) |
+| AI Review       | AI-powered code review system specification      | [AI Review](specs/ai-review.md)             |
 
 ## Development Commands
 
@@ -21,7 +21,7 @@ Detailed specifications for each domain live in the `specs/` directory.
 npm run build
 
 # Build specific packages
-npm run build:precommit  # Build agent-precommit only
+npm run build:ai-review  # Build ai-review only
 npm run build:sandbox     # Build agent-sandbox only
 ```
 
@@ -45,7 +45,7 @@ npm run format
 
 ```bash
 # Publish individual packages
-npm run publish:precommit
+npm run publish:ai-review
 npm run publish:sandbox
 
 # Publish all packages

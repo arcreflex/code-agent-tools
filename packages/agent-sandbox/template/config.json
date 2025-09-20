@@ -4,6 +4,6 @@
     ".git/hooks",
     ".husky",
     ".agent-sandbox",
-    ".agent-precommit/user-context.json"
+    ".ai-review/user-context.json"
   ]
 }

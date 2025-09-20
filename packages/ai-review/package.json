@@ -1,9 +1,12 @@
 {
-  "name": "@arcreflex/agent-precommit",
+  "name": "@arcreflex/ai-review",
   "version": "1.0.13",
   "description": "",
   "main": "dist/index.js",
-  "bin": "dist/index.js",
+  "bin": {
+    "ai-review": "dist/index.js",
+    "agent-precommit": "dist/index.js"
+  },
   "scripts": {
     "build": "pkgroll",
     "test": "echo \"Error: no test specified\" && exit 1"
@@ -20,7 +23,7 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/arcreflex/code-agent-tools.git",
-    "directory": "packages/agent-precommit"
+    "directory": "packages/ai-review"
   },
   "publishConfig": {
     "access": "public"

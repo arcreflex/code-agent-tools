@@ -160,7 +160,7 @@ Readonly overlay prevents modification of:
 - `.git/hooks` - Git hooks configuration
 - `.husky` - Husky pre-commit hooks
 - `.agent-sandbox` - Sandbox configuration
-- `.agent-precommit/user-context.json` - Precommit context
+- `.ai-review/user-context.json` - AI review context
 
 ### Configurable Protection
 
@@ -274,7 +274,7 @@ Configuration stored in `.agent-sandbox/` directory:
 ### Environment Detection
 
 - Marker file `/.agent-sandbox` indicates sandbox environment
-- Used by other tools (like agent-precommit) for conditional behavior
+- Used by other tools (like ai-review) for conditional behavior
 
 ## Security Features
 
@@ -428,7 +428,7 @@ Provide an escape hatch for repair and maintenance tasks that require relaxed gu
 
 ### Differences vs normal mode
 - No marker mount: does NOT mount `/.agent-sandbox` inside the container.
-  - Effect: tools that look for the marker (e.g., agent-precommit) will not auto-activate.
+  - Effect: tools that look for the marker (e.g., ai-review) will not auto-activate.
 - No readonly overlays: protected directory binds are omitted; everything in the workspace is writable from the container.
 - Optional root user: `--root` starts the container as `root` (`-u 0:0`). Useful for `chown`, permission fixes, or installing ad‑hoc diagnostics.
 

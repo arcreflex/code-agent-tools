@@ -3,5 +3,5 @@ dist/
 .env
 .DS_Store
 *.log
-.agent-precommit/reviews
-.agent-precommit/user-context.json
+.ai-review/reviews
+.ai-review/user-context.json

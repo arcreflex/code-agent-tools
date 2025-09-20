@@ -50,11 +50,11 @@ jobs:
       - name: Publish to NPM
         run: |
           # Check if packages have changed versions before publishing
-          if npm view @arcreflex/agent-precommit@$(node -p "require('./packages/agent-precommit/package.json').version") version 2>/dev/null; then
-            echo "agent-precommit version already published, skipping"
+          if npm view @arcreflex/ai-review@$(node -p "require('./packages/ai-review/package.json').version") version 2>/dev/null; then
+            echo "ai-review version already published, skipping"
           else
-            echo "Publishing agent-precommit..."
-            npm publish -w @arcreflex/agent-precommit --access public
+            echo "Publishing ai-review..."
+            npm publish -w @arcreflex/ai-review --access public
           fi
 
           if npm view @arcreflex/agent-sandbox@$(node -p "require('./packages/agent-sandbox/package.json').version") version 2>/dev/null; then

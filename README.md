@@ -9,7 +9,7 @@ AI agents often take shortcuts that skip code review, bypass pre-commit hooks, o
 ```bash
 # Install globally via npm
 npm install -g @arcreflex/agent-sandbox
-npm install -g @arcreflex/agent-precommit
+npm install -g @arcreflex/ai-review
 
 # Or install from source
 git clone https://github.com/arcreflex/code-agent-tools.git
@@ -26,9 +26,9 @@ Containerized development environments with built-in guardrails. See [detailed s
 
 **Branch-aware mode (dual mount):** sandboxes mount both the host repo and a shared “repo-shelf” volume. Use `--branch <name>` to work in `/repo-shelf/worktrees/<branch>`. Push back to the host with `git push host <branch>`. Default bind mode still works and can `cd` into any worktree.
 
-### [agent-precommit](./packages/agent-precommit/)
+### [ai-review](./packages/ai-review/)
 
-LLM-based pre-commit hook for code review. See [detailed specification](specs/agent-precommit.md).
+LLM-based code review CLI for staged changes, revision ranges, and pre-receive hooks. See [detailed specification](specs/ai-review.md).
 (Inspired by https://gist.github.com/huntcsg/c4fe3acf4f7d2fe1ca16e5518a27a23e via https://x.com/xlatentspace)
 
 ## Development
