@@ -508,7 +508,8 @@ async function init(args: { force: boolean }) {
   const entriesToAdd = gitignoreEntries.filter((entry) => !gitignoreContent.includes(entry));
 
   if (entriesToAdd.length > 0) {
-    const hasAIReviewSection = gitignoreContent.includes("# AI Review");
+    const hasAIReviewSection =
+      gitignoreContent.includes("# AI Review") || gitignoreContent.includes("# Agent Precommit");
     const newContent =
       gitignoreContent +
       (gitignoreContent && !gitignoreContent.endsWith("\n") ? "\n" : "") +
