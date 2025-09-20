@@ -722,12 +722,16 @@ async function reviewRange(args: {
         };
 
         const bullets: string[] = [];
-        const header = "Inferred from pushed commits:\n";
+        const objectiveHeader = "Inferred from pushed commits:\n";
+        const firstSep = "- ";
+        const nextSep = "\n- ";
+        let totalBytes = Buffer.byteLength(objectiveHeader);
         for (const { hash, message } of commits.slice(0, MAX_COMMITS)) {
           const lines = sanitize(message).split("\n");
           const rawSubject = (lines[0] ?? "").trim();
           const subject = clampSubject(rawSubject.length > 0 ? rawSubject : "<no subject>");
-          let bodyLines = lines.slice(1).map((l) => sanitize(l).replace(/\s+$/g, ""));
+          // Lines already passed through sanitize(message) above; avoid re-sanitizing here.
+          let bodyLines = lines.slice(1).map((l) => l.replace(/\s+$/g, ""));
 
           // collapse multiple blank lines to single
           const collapsed: string[] = [];
@@ -761,12 +765,14 @@ async function reviewRange(args: {
           const indentedBody = limited.length > 0 ? "\n  " + limited.join("\n  ") : "";
           const bullet = `${hash} ${subject}${indentedBody}`;
 
-          // Check total limit before adding
-          const candidate = `${header}- ${[...bullets, bullet].join("\n- ")}`;
-          if (Buffer.byteLength(candidate) > MAX_TOTAL_BYTES) {
+          // Check total limit before adding (linear accounting)
+          const sepBytes = Buffer.byteLength(bullets.length === 0 ? firstSep : nextSep);
+          const candBytes = totalBytes + sepBytes + Buffer.byteLength(bullet);
+          if (candBytes > MAX_TOTAL_BYTES) {
             break;
           }
           bullets.push(bullet);
+          totalBytes = candBytes;
         }
 
         if (bullets.length > 0) {
@@ -774,13 +780,17 @@ async function reviewRange(args: {
           const omitted = commits.length > bullets.length;
           let rendered = bullets.join("\n- ");
           if (omitted) {
-            const header = "Inferred from pushed commits:\n";
             const more = "… [more commits omitted]";
             // Try to add the omission note within limits
-            const candidate = `${header}- ${rendered}\n- ${more}`;
-            rendered = Buffer.byteLength(candidate) <= MAX_TOTAL_BYTES ? `${rendered}\n- ${more}` : rendered;
+            // We already have at least one bullet here; use nextSep for clarity
+            const sepBytes = Buffer.byteLength(nextSep);
+            const moreBytes = sepBytes + Buffer.byteLength(more);
+            if (totalBytes + moreBytes <= MAX_TOTAL_BYTES) {
+              rendered = `${rendered}\n- ${more}`;
+              totalBytes += moreBytes;
+            }
           }
-          objective = `${header}- ${rendered}`;
+          objective = `${objectiveHeader}${bullets.length ? firstSep : ""}${rendered}`;
         } else if (commits.length > 0) {
           objective = "Pushed commits (details omitted due to size)";
         }
