@@ -66,6 +66,12 @@ type PrecommitValues = {
   show: boolean;
   "project-context"?: string[];
   preview: boolean;
+  "default-branch"?: string;
+  include?: string[];
+  exclude?: string[];
+  "include-tags"?: boolean;
+  "max-diff-bytes"?: string;
+  "continue-on-fail"?: boolean;
   help: boolean;
 };
 
@@ -82,6 +88,16 @@ const CLI_OPTIONS: Record<string, OptionSpec> = {
   show: { type: "boolean", default: false, desc: "Show saved user context" },
   "project-context": { type: "string", multiple: true, desc: "Extra project files to include" },
   preview: { type: "boolean", default: false, desc: "Preview system+user messages then exit" },
+  "default-branch": { type: "string", desc: "Default branch name used as base for new refs (pre-receive)" },
+  include: { type: "string", multiple: true, desc: "Include ref pattern (glob), default refs/heads/* (pre-receive)" },
+  exclude: { type: "string", multiple: true, desc: "Exclude ref pattern (glob), default refs/tags/* (pre-receive)" },
+  "include-tags": { type: "boolean", default: false, desc: "Include tag updates (pre-receive)" },
+  "max-diff-bytes": { type: "string", desc: "Override diff byte cap (pre-receive)" },
+  "continue-on-fail": {
+    type: "boolean",
+    default: false,
+    desc: "Process all updates then fail if any failed (pre-receive)",
+  },
   help: { type: "boolean", short: "h", default: false, desc: "Show help" },
 };
 
@@ -161,6 +177,110 @@ const COMMANDS: Record<string, CommandSpec<PrecommitValues>> = {
         process.exit(0);
       } catch (error) {
         console.error(chalk.red("Unhandled error in review-range"));
+        console.error(error);
+        process.exit(2);
+      }
+    },
+  },
+  "pre-receive": {
+    summary: "Server-side hook. Review pushed updates from stdin",
+    usage: [
+      "agent-precommit pre-receive [--project-context <glob> ...] [--objective <text>] [--default-branch <name>] [--include <glob> ...] [--exclude <glob> ...] [--include-tags] [--max-diff-bytes <n>] [--continue-on-fail] [--preview]",
+      "cat updates.txt | agent-precommit pre-receive",
+      "agent-precommit pre-receive <old> <new> <ref> [<old> <new> <ref> ...]",
+    ],
+    run: async ({ args }) => {
+      try {
+        const opts = args.values;
+
+        const includePatterns: string[] = ["refs/heads/*", ...(opts.include ?? [])];
+        const excludeDefaults = opts["include-tags"] ? [] : ["refs/tags/*"];
+        const excludePatterns: string[] = [...excludeDefaults, ...(opts.exclude ?? [])];
+        const defaultBranch = opts["default-branch"] ?? "main";
+        const continueOnFail = Boolean(opts["continue-on-fail"]);
+
+        const maxEnv = process.env.AGENT_PRECOMMIT_MAX_DIFF_BYTES;
+        const maxOverride = opts["max-diff-bytes"];
+        const maxBytes = (() => {
+          const v = maxOverride ?? maxEnv ?? "800000";
+          const n = parseInt(v, 10);
+          return Number.isFinite(n) && n > 0 ? n : 800000;
+        })();
+
+        // Gather updates: either from positionals (triples) or stdin
+        const positionals = args.positionals.slice(1);
+        let updates: Array<{ old: string; newRef: string; ref: string }> = [];
+
+        if (positionals.length >= 3 && positionals.length % 3 === 0) {
+          for (let i = 0; i < positionals.length; i += 3) {
+            updates.push({ old: positionals[i], newRef: positionals[i + 1], ref: positionals[i + 2] });
+          }
+        } else {
+          // Read stdin
+          updates = await readPreReceiveUpdatesFromStdin();
+        }
+
+        if (updates.length === 0) {
+          console.log(chalk.gray("agent-precommit: no updates provided to pre-receive"));
+          process.exit(0);
+        }
+
+        // Filter by include/exclude
+        updates = updates.filter((u) => matchesAny(u.ref, includePatterns) && !matchesAny(u.ref, excludePatterns));
+
+        if (updates.length === 0) {
+          console.log(chalk.gray("agent-precommit: no updates matched filters"));
+          process.exit(0);
+        }
+
+        const ZERO = "0000000000000000000000000000000000000000";
+        let anyFailed = false;
+
+        for (const u of updates) {
+          // Skip ref deletions
+          if (u.newRef === ZERO) continue;
+
+          const shortOld = u.old === ZERO ? "∅" : (await $`git rev-parse --short ${u.old}`).stdout.trim();
+          const shortNew = (await $`git rev-parse --short ${u.newRef}`).stdout.trim();
+          console.log(`agent-precommit: reviewing ${u.ref} ${shortOld}..${shortNew}`);
+
+          // Determine effective base for diff size and review-range
+          const effectiveOld = u.old !== ZERO ? u.old : await determineNewRefBase(u.newRef, defaultBranch);
+
+          // Enforce byte cap before invoking model
+          const bytesOut =
+            await $`git diff --no-ext-diff --no-color --patch --binary ${effectiveOld} ${u.newRef} | wc -c | awk '{print $1}'`;
+          const bytes = parseInt(bytesOut.stdout.trim(), 10) || 0;
+          if (bytes > maxBytes) {
+            console.error(
+              chalk.red(
+                `agent-precommit: diff for ${u.ref} is ${bytes} bytes (max ${maxBytes}). Split this push into smaller chunks.`,
+              ),
+            );
+            anyFailed = true;
+            if (!continueOnFail) break;
+            continue;
+          }
+
+          // Delegate to review-range with effective base
+          const result = await reviewRange({
+            old: effectiveOld,
+            new: u.newRef,
+            ref: u.ref,
+            objective: opts.objective,
+            "project-context": opts["project-context"],
+            preview: opts.preview,
+          });
+
+          if (result.kind === "review-done" && !result.pass) {
+            anyFailed = true;
+            if (!continueOnFail) break;
+          }
+        }
+
+        process.exit(anyFailed ? 1 : 0);
+      } catch (error) {
+        console.error(chalk.red("Unhandled error in pre-receive"));
         console.error(error);
         process.exit(2);
       }
@@ -635,6 +755,60 @@ async function getGitContextFromRange(oldRef: string, newRef: string): Promise<[
   const status = await $`git diff --no-ext-diff --no-color --name-status ${base} ${newRef}`;
   const diff = await $`git diff --no-ext-diff --no-color --patch --binary ${base} ${newRef}`;
   return [status.stdout, diff.stdout];
+}
+
+/**
+ * Determine the effective base for a new ref push.
+ * Prefer merge-base with the declared default branch; fall back to empty tree.
+ */
+async function determineNewRefBase(newRef: string, defaultBranch: string): Promise<string> {
+  try {
+    const base = await $`git merge-base ${defaultBranch} ${newRef}`;
+    const commit = base.stdout.trim();
+    if (commit) return commit;
+  } catch {
+    // ignore
+  }
+  const emptyTree = await $`git hash-object -t tree -w /dev/null`;
+  return emptyTree.stdout.trim();
+}
+
+/**
+ * Read updates from stdin for pre-receive: lines of "<old> <new> <ref>".
+ */
+async function readPreReceiveUpdatesFromStdin(): Promise<Array<{ old: string; newRef: string; ref: string }>> {
+  if (process.stdin.isTTY) return [];
+  const chunks: Buffer[] = [];
+  await new Promise<void>((resolve) => {
+    process.stdin.on("data", (c) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(String(c))));
+    process.stdin.on("end", () => resolve());
+    process.stdin.resume();
+  });
+  const text = Buffer.concat(chunks).toString("utf8");
+  const updates: Array<{ old: string; newRef: string; ref: string }> = [];
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const parts = trimmed.split(/\s+/);
+    if (parts.length >= 3) {
+      updates.push({ old: parts[0], newRef: parts[1], ref: parts.slice(2).join(" ") });
+    }
+  }
+  return updates;
+}
+
+/**
+ * Simple glob matcher supporting * and ? for refname patterns.
+ */
+function matchesAny(text: string, patterns: string[]): boolean {
+  return patterns.some((p) => globLike(text, p));
+}
+
+function globLike(text: string, pattern: string): boolean {
+  // Escape regex special chars, then replace \* and \? tokens
+  const esc = pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const rx = new RegExp("^" + esc.replace(/\\\*/g, ".*").replace(/\\\?/g, ".") + "$");
+  return rx.test(text);
 }
 
 async function getDataDir(): Promise<string> {
