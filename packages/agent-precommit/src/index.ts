@@ -817,10 +817,22 @@ async function getDataDir(): Promise<string> {
     if (isBare) {
       const gitDir = (await $`git rev-parse --git-dir`).stdout.trim();
       return path.join(gitDir, ".agent-precommit");
-    } else {
-      const repoRoot = await $`git rev-parse --show-toplevel`;
-      return path.join(repoRoot.stdout.trim(), ".agent-precommit");
     }
+
+    // In non-bare repos, hooks triggered during push execute in $GIT_DIR (inside .git),
+    // where --show-toplevel may fail. Prefer show-toplevel, but derive from --git-dir if needed.
+    try {
+      const repoRoot = (await $`git rev-parse --show-toplevel`).stdout.trim();
+      if (repoRoot) return path.join(repoRoot, ".agent-precommit");
+    } catch {
+      // fall through to derive from git-dir
+    }
+
+    const gitDirOut = await $`git rev-parse --git-dir`;
+    const gitDir = gitDirOut.stdout.trim();
+    const absGitDir = path.isAbsolute(gitDir) ? gitDir : path.resolve(process.cwd(), gitDir);
+    const repoRoot = path.dirname(absGitDir);
+    return path.join(repoRoot, ".agent-precommit");
   } catch (err) {
     // Deterministic fallback: place data dir under current working directory
     console.warn(
