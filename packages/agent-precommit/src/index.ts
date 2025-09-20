@@ -665,32 +665,134 @@ async function reviewRange(args: {
 }): Promise<{ kind: "preview-shown" } | { kind: "no-changes" } | { kind: "review-done"; pass: boolean }> {
   const { old, new: nu, ref } = args;
 
-  // Build an inferred objective if not provided, based on commit subjects
+  // Build an inferred objective if not provided, including full commit messages
   let objective = args.objective;
   if (!objective) {
     try {
       const ZERO = "0000000000000000000000000000000000000000";
-      if (old !== ZERO) {
-        // Use ':' as a safe separator inside --pretty to avoid shell splitting
-        const log = await $`git log --pretty=format:%h:%s ${old}..${nu}`;
-        const lines = log.stdout
-          .split("\n")
-          .map((l) => l.trim())
-          .filter(Boolean)
-          .slice(0, 50);
-        if (lines.length > 0) {
-          // Render as "hash subject" by replacing the first ':' with a space
-          const rendered = lines.map((l) => {
-            const once = l.replace(":", " ");
-            return once.length > 120 ? once.slice(0, 117) + "…" : once;
-          });
-          objective = `Inferred from pushed commits:\n- ${rendered.join("\n- ")}`;
-        } else if (old === ZERO) {
-          objective = "New branch push";
+      if (old === ZERO) {
+        objective = "New branch push";
+      } else {
+        // Use NUL (\x00) as a robust separator between fields to capture full messages safely
+        // Sequence is repeated per commit: <hash>\0<full message>\0
+        const log = await $`git log --no-color --max-count=50 --pretty=format:%h%x00%B%x00 ${old}..${nu}`;
+        const parts = log.stdout.split("\u0000").filter(Boolean);
+        // Chunk into [hash, message] pairs and cap at 50 commits
+        const commits: Array<{ hash: string; message: string }> = [];
+        for (let i = 0; i + 1 < parts.length && commits.length < 50; i += 2) {
+          const hash = parts[i].trim();
+          const message = (parts[i + 1] ?? "").replace(/\r\n?/g, "\n").trimEnd();
+          if (hash) commits.push({ hash, message });
+        }
+
+        // Limits to prevent oversized prompts
+        const MAX_COMMITS = 50;
+        const MAX_SUBJECT_CHARS = 120;
+        const MAX_BODY_LINES = 8;
+        const MAX_BODY_BYTES = 1000; // per-commit body cap
+        const MAX_TOTAL_BYTES = 12000; // overall inferred objective cap
+
+        const sanitize = (s: string) =>
+          Array.from(s)
+            .filter((ch) => {
+              const code = ch.charCodeAt(0);
+              // allow tab (9) and newline (10); strip other C0 controls and DEL (127)
+              if (code === 9 || code === 10) return true;
+              if (code < 32 || code === 127) return false;
+              return true;
+            })
+            .join("");
+        const clampSubject = (s: string) =>
+          s.length > MAX_SUBJECT_CHARS ? s.slice(0, MAX_SUBJECT_CHARS - 1) + "…" : s;
+        const truncateByBytes = (s: string, max: number) => {
+          const bytes = Buffer.byteLength(s);
+          if (bytes <= max) return { text: s, truncated: false } as const;
+          // naive but safe: grow until limit
+          let acc = "";
+          let truncated = false;
+          for (const ch of s) {
+            const next = acc + ch;
+            if (Buffer.byteLength(next) > max) {
+              truncated = true;
+              break;
+            }
+            acc = next;
+          }
+          return { text: acc, truncated } as const;
+        };
+
+        const bullets: string[] = [];
+        const header = "Inferred from pushed commits:\n";
+        for (const { hash, message } of commits.slice(0, MAX_COMMITS)) {
+          const lines = sanitize(message).split("\n");
+          const rawSubject = (lines[0] ?? "").trim();
+          const subject = clampSubject(rawSubject.length > 0 ? rawSubject : "<no subject>");
+          let bodyLines = lines.slice(1).map((l) => sanitize(l).replace(/\s+$/g, ""));
+
+          // collapse multiple blank lines to single
+          const collapsed: string[] = [];
+          for (const ln of bodyLines) {
+            if (ln.trim() === "" && collapsed[collapsed.length - 1]?.trim() === "") continue;
+            collapsed.push(ln);
+          }
+          bodyLines = collapsed;
+
+          // limit lines and bytes
+          let limited: string[] = [];
+          let bytes = 0;
+          let truncated = false;
+          for (const ln of bodyLines) {
+            if (limited.length >= MAX_BODY_LINES) {
+              truncated = true;
+              break;
+            }
+            const { text } = truncateByBytes(ln, Math.max(0, MAX_BODY_BYTES - bytes));
+            bytes += Buffer.byteLength(text);
+            limited.push(text);
+            if (bytes >= MAX_BODY_BYTES) {
+              truncated = true;
+              break;
+            }
+          }
+          if (truncated) {
+            limited.push("… [truncated]");
+          }
+
+          const indentedBody = limited.length > 0 ? "\n  " + limited.join("\n  ") : "";
+          const bullet = `${hash} ${subject}${indentedBody}`;
+
+          // Check total limit before adding
+          const candidate = `${header}- ${[...bullets, bullet].join("\n- ")}`;
+          if (Buffer.byteLength(candidate) > MAX_TOTAL_BYTES) {
+            break;
+          }
+          bullets.push(bullet);
+        }
+
+        if (bullets.length > 0) {
+          // If we omitted any remaining commits, hint at omission
+          const omitted = commits.length > bullets.length;
+          let rendered = bullets.join("\n- ");
+          if (omitted) {
+            const header = "Inferred from pushed commits:\n";
+            const more = "… [more commits omitted]";
+            // Try to add the omission note within limits
+            const candidate = `${header}- ${rendered}\n- ${more}`;
+            rendered = Buffer.byteLength(candidate) <= MAX_TOTAL_BYTES ? `${rendered}\n- ${more}` : rendered;
+          }
+          objective = `${header}- ${rendered}`;
+        } else if (commits.length > 0) {
+          objective = "Pushed commits (details omitted due to size)";
         }
       }
-    } catch {
-      // ignore log errors
+    } catch (err) {
+      console.error(
+        chalk.yellow(
+          `Warning: failed to infer objective from git log for range ${old}..${nu}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        ),
+      );
     }
   }
 
