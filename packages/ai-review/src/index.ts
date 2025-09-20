@@ -324,7 +324,7 @@ function toParseArgsOptions(options: Record<string, OptionSpec>): ParseArgsOptio
 function printHelp(command?: string) {
   const header = "ai-review";
   if (!command) {
-    console.log(`${header} - AI-powered precommit review`);
+    console.log(`${header} - AI-powered code review for commits, ranges, and pre-receive hooks`);
     console.log("");
     console.log("Usage: ai-review [command] [options]");
     console.log("");
@@ -508,11 +508,11 @@ async function init(args: { force: boolean }) {
   const entriesToAdd = gitignoreEntries.filter((entry) => !gitignoreContent.includes(entry));
 
   if (entriesToAdd.length > 0) {
-    const hasAgentPrecommitSection = gitignoreContent.includes("# Agent Precommit");
+    const hasAIReviewSection = gitignoreContent.includes("# AI Review");
     const newContent =
       gitignoreContent +
       (gitignoreContent && !gitignoreContent.endsWith("\n") ? "\n" : "") +
-      (hasAgentPrecommitSection ? "" : "\n# Agent Precommit\n") +
+      (hasAIReviewSection ? "" : "\n# AI Review\n") +
       entriesToAdd.join("\n") +
       "\n";
     fs.writeFileSync(gitignorePath, newContent);
@@ -531,10 +531,10 @@ async function init(args: { force: boolean }) {
   if (!existingEnv) {
     console.log(chalk.yellow(`Set environment variables in ${dataDir}/.env and add:`));
     console.log(chalk.white(command));
-    console.log(chalk.yellow(`to your precommit hook`));
+    console.log(chalk.yellow(`to your pre-commit hook`));
   } else {
     console.log(chalk.gray(`Your existing .env configuration has been preserved.`));
-    console.log(chalk.gray(`Ensure ${command} is in your precommit hook.`));
+    console.log(chalk.gray(`Ensure ${command} is in your pre-commit hook.`));
   }
 }
 
