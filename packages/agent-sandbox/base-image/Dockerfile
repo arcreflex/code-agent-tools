@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   man-db \
   unzip \
   gnupg2 \
+  curl \
   gh \
   iptables \
   ipset \

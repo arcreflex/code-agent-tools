@@ -3,7 +3,7 @@ set -euo pipefail
 
 echo "Setting up sandbox environment..."
 
-if [ "${SKIP_FIREWAL:-}" = "1" ]; then
+if [ "${SKIP_FIREWALL:-}" = "1" ]; then
   echo "Skipping firewall setup as SKIP_FIREWALL is set."
 else
   # Run firewall initialization

@@ -64,16 +64,28 @@ while read -r cidr; do
 done < <(echo "$gh_ranges" | jq -r '(.web + .api + .git)[]' | aggregate -q)
 
 # Resolve and add other allowed domains
-for domain in \
-    "registry.npmjs.org" \
-    "openrouter.ai" \
-    "api.openai.com" \
-    "auth.openai.com" \
-    "chatgpt.com" \
-    "api.anthropic.com" \
-    "sentry.io" \
-    "statsig.anthropic.com" \
-    "statsig.com"; do
+CONFIG_JSON="/.agent-sandbox/config.json"
+BASE_DOMAINS=(
+    "registry.npmjs.org"
+    "openrouter.ai"
+    "api.openai.com"
+    "auth.openai.com"
+    "chatgpt.com"
+    "api.anthropic.com"
+    "sentry.io"
+    "statsig.anthropic.com"
+    "statsig.com"
+)
+DOMAINS=("${BASE_DOMAINS[@]}")
+
+if [ -r "$CONFIG_JSON" ]; then
+    mapfile -t EXTRA_DOMAINS < <(jq -r '.egress_allow_domains[]? // empty' "$CONFIG_JSON" 2>/dev/null || true)
+    if [ "${#EXTRA_DOMAINS[@]}" -gt 0 ]; then
+        DOMAINS+=("${EXTRA_DOMAINS[@]}")
+    fi
+fi
+
+for domain in "${DOMAINS[@]}"; do
     echo "Resolving $domain..."
     # Get only IPv4 A records (dig may print a CNAME first even with +short A)
     ips=$(dig +short A "$domain" | awk '/^([0-9]{1,3}\.){3}[0-9]{1,3}$/' | sort -u || true)
@@ -141,5 +153,3 @@ if ! curl --connect-timeout 5 https://api.github.com/zen >/dev/null 2>&1; then
 else
     echo "Firewall verification passed - able to reach https://api.github.com as expected"
 fi
-
-# Test comment added by AI agent

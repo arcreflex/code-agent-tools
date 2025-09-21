@@ -2,7 +2,7 @@
 
 Tools that prevent AI agents from bypassing development quality controls. Blocks shortcuts like `--no-verify` and protects critical workflow infrastructure.
 
-AI agents often take shortcuts that skip code review, bypass pre-commit hooks, or modify development infrastructure. These tools enforce proper development practices by blocking problematic commands and protecting key directories.
+AI agents sometimes skip code review, bypass pre-commit hooks, or modify development infrastructure. These tools enforce proper development practices by blocking problematic commands and protecting key directories.
 
 ## Installation
 
@@ -22,14 +22,13 @@ npm run build
 
 ### [agent-sandbox](./packages/agent-sandbox/)
 
-Containerized development environments with built-in guardrails. See [detailed specification](specs/agent-sandbox.md).
+Containerized development environments with built-in guardrails. See the [detailed specification](specs/agent-sandbox.md).
 
-**Branch-aware mode (dual mount):** sandboxes mount both the host repo and a shared “repo-shelf” volume. Use `--branch <name>` to work in `/repo-shelf/worktrees/<branch>`. Push back to the host with `git push host <branch>`. Default bind mode still works and can `cd` into any worktree.
+Each workspace runs a single container that mounts the host checkout at `/workspace/<repo>` and a shared **repo-shelf** volume. `--branch <name>` (default: the current host branch) provisions `/repo-shelf/worktrees/<branchSan>`. `agent-sandbox shell` launches directly in that path via `docker exec -w`. Sandbox branches track `host/<branch>` so `git push` works without extra flags.
 
 ### [ai-review](./packages/ai-review/)
 
-LLM-based code review CLI for staged changes, revision ranges, and pre-receive hooks. See [detailed specification](specs/ai-review.md).
-(Inspired by https://gist.github.com/huntcsg/c4fe3acf4f7d2fe1ca16e5518a27a23e via https://x.com/xlatentspace)
+LLM-based code review CLI for staged changes, revision ranges, and pre-receive hooks. See the [detailed specification](specs/ai-review.md).
 
 ## Development
 

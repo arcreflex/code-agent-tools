@@ -4,4 +4,5 @@ dist/
 .DS_Store
 *.log
 .ai-review/reviews
+.ai-review/jobs
 .ai-review/user-context.json

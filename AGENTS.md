@@ -12,6 +12,17 @@ Detailed specifications for each domain live in the `specs/` directory.
 | Agent Sandbox   | Docker container sandbox implementation details  | [Agent Sandbox](specs/agent-sandbox.md)     |
 | AI Review       | AI-powered code review system specification      | [AI Review](specs/ai-review.md)             |
 
+## Milestone Reviews (agent-invoked)
+
+At natural checkpoints, run the built-in reviewer locally before pushing:
+
+```
+ai-review
+ai-review review-range $(git merge-base host/main HEAD) HEAD
+```
+
+Use the first command for staged work-in-progress; the second checks your current branch against the latest `host/main` snapshot.
+
 ## Development Commands
 
 ### Build Commands
