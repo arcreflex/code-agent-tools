@@ -20,5 +20,17 @@ if [[ "$*" =~ push.*(--force|--force-with-lease) ]]; then
     exit 1
 fi
 
+# Guard against global config edits
+if [[ "$1" == "config" && ( " $* " == *" --global "* ) ]]; then
+    echo "Error: Mutating global git config is disallowed inside the sandbox. Set repo-local config instead." >&2
+    exit 1
+fi
+
+# Guard against destructive ref edits (opt-out with env if truly necessary)
+if [[ "$1" == "update-ref" && "${AGENT_SANDBOX_ALLOW_UPDATE_REF:-}" != "1" ]]; then
+    echo "Error: 'git update-ref' is blocked by default in the sandbox. Set AGENT_SANDBOX_ALLOW_UPDATE_REF=1 if you are absolutely sure." >&2
+    exit 1
+fi
+
 # Execute the real git command
 exec /usr/bin/git "$@"

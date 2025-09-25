@@ -1,4 +1,4 @@
-FROM node:23
+FROM node:24-bookworm-slim
 
 # Build arguments for tool versions
 ARG CLAUDE_CODE_VERSION=latest
@@ -10,6 +10,7 @@ ARG AST_GREP_VERSION=latest
 RUN apt-get update && apt-get install -y --no-install-recommends \
   less \
   git \
+  ca-certificates \
   procps \
   sudo \
   fzf \
@@ -69,15 +70,15 @@ ENV HISTFILE=/commandhistory/.bash_history
 ENV PROMPT_COMMAND="history -a"
 
 # Install AI CLIs globally
-RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
-RUN npm install -g @openai/codex@${CODEX_VERSION}
-RUN npm install -g opencode-ai@latest
+RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} || echo "warning: failed to install @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+RUN npm install -g @openai/codex@${CODEX_VERSION} || echo "warning: failed to install @openai/codex@${CODEX_VERSION}"
+RUN npm install -g opencode-ai@latest || echo "warning: failed to install opencode-ai@latest"
 
 # Tools for AI agents
-RUN npm install -g @playwright/mcp@latest
+RUN npm install -g @playwright/mcp@latest || echo "warning: failed to install @playwright/mcp@latest"
 
 # Install code-aware grep (ast-grep)
-RUN npm install -g @ast-grep/cli@${AST_GREP_VERSION}
+RUN npm install -g @ast-grep/cli@${AST_GREP_VERSION} || echo "warning: failed to install @ast-grep/cli@${AST_GREP_VERSION}"
 
 # Add freeclaude alias
 RUN echo "alias freeclaude='claude --dangerously-skip-permissions'" >> /home/node/.bashrc

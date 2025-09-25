@@ -15,27 +15,25 @@ SANDBOX_DIR=".agent-sandbox"
 
 echo "Verifying sandbox integrity..."
 
+errors=()
+
 # Check each template file
 while IFS= read -r -d '' file; do
   rel="${file#$TEMPLATE_DIR/}"
   target="$SANDBOX_DIR/$rel"
-  
+
   if [ ! -f "$target" ]; then
-    echo "Error: Missing file: $rel" >&2
-    echo "To fix: cp '$file' '$target'" >&2
-    exit 1
+    errors+=("Missing file: $rel"$'\n'"  To fix: cp '$file' '$target'")
+    continue
   fi
-  
+
   # Compare checksums
   template_sum=$(sha256sum "$file" | cut -d' ' -f1)
   sandbox_sum=$(sha256sum "$target" | cut -d' ' -f1)
-  
+
   if [ "$template_sum" != "$sandbox_sum" ]; then
-    echo "Error: File modified: $rel" >&2
-    echo "Differences:" >&2
-    diff -u "$file" "$target" | head -20 >&2 || true
-    echo "To fix: cp '$file' '$target'" >&2
-    exit 1
+    diff_snippet=$(diff -u "$file" "$target" | head -20 || true)
+    errors+=("File modified: $rel"$'\n'"  Differences (first 20 lines):"$'\n'"$(printf '%s' "$diff_snippet")"$'\n'"  To fix: cp '$file' '$target'")
   fi
 done < <(find "$TEMPLATE_DIR" -type f \
   ! -path "*/.git/*" \
@@ -44,6 +42,27 @@ done < <(find "$TEMPLATE_DIR" -type f \
   ! -name "*.swp" \
   ! -name "*.tmp" \
   -print0)
+
+# Detect extras in SANDBOX_DIR that are not part of the template
+while IFS= read -r -d '' sandbox_file; do
+  rel="${sandbox_file#$SANDBOX_DIR/}"
+  tpl_path="$TEMPLATE_DIR/$rel"
+  if [ ! -f "$tpl_path" ]; then
+    errors+=("Unexpected extra file in sandbox: $rel"$'\n'"  Consider removing it or adding to the template if intended.")
+  fi
+done < <(find "$SANDBOX_DIR" -type f \
+  ! -path "*/.git/*" \
+  ! -path "*/node_modules/*" \
+  ! -name ".DS_Store" \
+  ! -name "*.swp" \
+  ! -name "*.tmp" \
+  -print0)
+
+if [ "${#errors[@]}" -gt 0 ]; then
+  echo "✗ Sandbox integrity check failed:" >&2
+  printf ' - %s\n\n' "${errors[@]}" >&2
+  exit 1
+fi
 
 echo "✓ Sandbox integrity verified"
 exit 0

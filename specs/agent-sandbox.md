@@ -1,6 +1,6 @@
 # Agent Sandbox Specification
 
-## Overview
+## Overview (fail-closed)
 
 Agent-sandbox provides Docker-based containerized environments with guardrails that prevent AI agents from bypassing development quality controls.
 
@@ -13,7 +13,7 @@ Agent-sandbox uses a two-layer image model:
 
 ### Base image contents
 
-Preinstalled shared tooling:
+Preinstalled shared tooling (Node 24 base):
 
 - Core utilities: `less`, `fzf`, `man-db`, `unzip`, `jq`, `aggregate`, `procps`
 - VCS/diff: `git`, `gh`, `git-delta`
@@ -24,10 +24,10 @@ Preinstalled shared tooling:
 
 Environment and guardrails:
 
-- Non-root user `node`, persistent history at `/commandhistory`, config at `/home/node/.claude` and `/home/node/.codex`
-- `ENTRYPOINT` runs `entrypoint.sh` which initializes the firewall and then starts a shell (interactive) or `tail -f /dev/null` (detached)
+- Non-root user `node`, persistent history at `/commandhistory`, config at `CONFIG_VOLUME/.claude` and `CONFIG_VOLUME/.codex`
+- `ENTRYPOINT` runs `entrypoint.sh` which initializes the firewall (fail-closed) and then starts a shell (interactive) or `tail -f /dev/null` (detached)
 - Security scripts:
-  - `init-firewall.sh` (iptables/ipset allowlist)
+  - `init-firewall.sh` (iptables/ipset allowlist; **filter table only**, default DROP, DNS UDP+TCP, SSH egress only to GitHub, HTTPS only to allowlisted domains)
   - `git-wrapper.sh` (blocks `--no-verify`, force pushes)
   - `entrypoint.sh` (invokes firewall init)
 
@@ -36,19 +36,16 @@ Dockerfile practices:
 - Uses `--no-install-recommends` and cleans apt lists
 - Pins versions via build args where practical
 - Runs as non-root for normal operation; uses scoped sudo for firewall init
-- Sets standardized `WORKDIR=/workspace`
 
 ### Per-repo Dockerfile (template)
 
 Per-repo Dockerfiles are minimal and derive from the base image:
 
-````
-
+```Dockerfile
 ARG BASE_IMAGE_TAG=latest
 FROM agent-sandbox-base:${BASE_IMAGE_TAG}
 
 # Optional repo-specific additions; do not change ENTRYPOINT/USER.
-
 ```
 
 Guidelines:
@@ -56,7 +53,6 @@ Guidelines:
 - Add only repo-specific OS packages or global tools unique to the repo
 - Do not reinstall shared AI CLIs or copy the security scripts
 - Do not change `ENTRYPOINT` or `USER` unless strictly required
-- Do not copy application code; the workspace is bind-mounted at runtime
 
 ## Building Images
 
@@ -66,7 +62,7 @@ CLI:
   - Builds `agent-sandbox-base:<tag>` from `packages/agent-sandbox/base-image/Dockerfile`
   - Floating `latest` versions are resolved to concrete npm versions to improve Docker cache reuse
 - `agent-sandbox build [path] [--base-tag <tag>]`
-  - Builds the per-repo image in `.agent-sandbox/` with `--build-arg BASE_IMAGE_TAG=<tag>` (default `latest`)
+  - Builds the per-repo image from `.agent-sandbox/Dockerfile` if it exists with `--build-arg BASE_IMAGE_TAG=<tag>` (default `latest`), falling back to just the base image if not.
 
 ## Container Management
 
@@ -77,16 +73,19 @@ CLI:
 - `start [path] [--branch <name>] [--base-tag <tag>] [--build]` — starts the container (auto-started by `shell` if needed)
 - `stop [path]` — stops and removes the running container (`--rm` is used at start)
 - `shell [path] [--branch <name>] [--build]` — opens an interactive shell; ensures provisioning for the requested branch
+  - This is also the default commaned if none provided.
 - `show-run [path] [--base-tag <tag>]` — prints the `docker run` command
-- `list` — lists running agent-sandbox containers
+- `volumes [path]` - lists Docker volumes used by agent-sandbox for the current repo
+- `shared-volumes` - list shared volumes used by agent-sandbox
+- `list` — lists running agent-sandbox containers and their associated repo paths
 - `admin [path] [--root] [--build]` — opens an admin shell (see **Admin Mode**)
+- `codex-init-config [--auth] [--force]` — initializes or updates the shared Codex config volume (see **Codex configuration and auth**)
 
 ### Container, Volume, and Identity
 
-- Container name: `agent-sandbox-<repoName>-<hash>`
+- Container name: `agent-sbx-<repoName>-<hash of abs repo path>`
 - Repo-shelf volume name: `agent-sbx-repo-<md5(abs path)>`
 - History volume: `agent-sandbox-history-<repoName>-<hash>`
-- Labels expose `workspace` (host path), `mode` (`multi-branch` or `admin`), and `repoShelfVolume`
 
 ## Repo-Shelf Worktrees
 
@@ -120,44 +119,138 @@ Provisioning is idempotent:
 /worktrees
 /<branch-sanitized> # one worktree per branch
 
-````
+```
 
-## Network Security
+## Development Environment
 
-### Firewall
+The base image provides a standardized development environment with common CLI tools, editors, and network/security utilities (see Image Model for the complete list). Repo images inherit this environment.
 
-`init-firewall.sh` applies a default-deny egress policy:
+### AI Development CLIs
 
-- Allows outbound DNS and SSH
-- Maintains an ipset of allowed destinations
-- Restores internal Docker DNS NAT rules as needed
-- Verifies policy by blocking generic external destinations and allowing GitHub API
+Pre-installed globally in the base image:
 
-### Allowlist
+- **Claude Code**: Config at `CONFIG_VOLUME/.claude`
+- **OpenAI Codex**: Config at `CONFIG_VOLUME/.codex`
+- **ast-grep**: Installed as `ast-grep`/`sg` on PATH for structural search and rewrite
 
-- **Package registries**: npm
-- **AI services**: OpenRouter, OpenAI, Anthropic
-- **Developer services**: GitHub (IP ranges fetched via GitHub meta API)
-- **Monitoring**: Sentry, Statsig
+### Codex configuration and auth
 
-Extra egress destinations can be added via `/.agent-sandbox/config.json`:
+```
+# Initialize shared Codex config in the sandbox volume
+agent-sandbox codex-init-config [--auth]
+```
+
+Behavior:
+
+- Initializes .codex dir in the config volume (`CONFIG_VOLUME/.codex`).
+- Ensures a `config.toml` exists with a "high" profile for GPT‑5 configured for high reasoning effort.
+- Creates or updates an `AGENTS.md` note inside the Codex config volume describing the containerized sandbox environment and installed tools.
+- With `--auth`, imports host Codex credentials (`~/.codex/auth.json`) into the shared volume.
+- Idempotent by default: if `config.toml`, `AGENTS.md`, or `profile.json` already exist in the volume, they are left as‑is and a message is printed. Use `--force` to overwrite these files. (Exception: `auth.json` is always overwritten if `--auth` is set.)
+
+Initial `CONFIG_VOLUME/.codex/config.toml` profile created/ensured by this command:
+
+```
+[profiles.high]
+model = "gpt-5-codex"
+# Constrains reasoning effort for reasoning-capable models
+reasoning_effort = "high"
+```
+
+Initial `CONFIG_VOLUME/.codex/AGENTS.md` content set by this command: see `codex-agent-instructions.md`. Purpose:
+
+- to let the AI agent know that it's working in a containerized sandbox environment designed to safely allow lots of autonomy.
+- and to document nonstandard tools that are available in the base image (e.g., ast-grep)
+
+### Custom Aliases
+
+- `freeclaude` - Run Claude Code without permission checks
+
+### Shell Configuration
+
+- Optimized bash settings
+- Persistent command history
+- Enhanced prompt and colors
+
+## Configuration
+
+### Workspace Configuration
+
+Configuration stored in `.agent-sandbox/` directory:
+
+- Container settings
+- Protected directory list
+- Custom environment variables
+
+### Environment Detection
+
+- Marker file `/.agent-sandbox` indicates sandbox environment
+- Used by other tools (like ai-review) for conditional behavior
+
+## Guardrails
+
+### Process Isolation
+
+- Runs as non-root user (`node`)
+- Limited container capabilities
+- No privileged operations
+
+### Filesystem Protection
+
+- Readonly bind mounts for sensitive directories
+- Workspace mounted with write access (except protected paths)
+
+### Network Isolation
+
+`init-firewall.sh` applies a **default-deny** (fail-closed) policy using the **filter** table only:
+
+- Default policies: `INPUT DROP`, `FORWARD DROP`, `OUTPUT DROP`
+- First rules: `ESTABLISHED,RELATED` on INPUT/OUTPUT, then loopback allow
+- DNS: allow **UDP+TCP 53** to Docker's resolver (`127.0.0.11`)
+- Outbound allowlists:
+  - **GitHub meta CIDRs** (from `api.github.com/meta`) for **TCP 22 and 443**
+  - **Resolved IPv4 A-records** for allowlisted domains for **TCP 443**
+- Inbound: **closed** by default; only TCP ports listed in `.agent-sandbox/config.json#ports` are opened
+- NAT chains are **not** modified (keeps Docker networking intact)
+- Verification: blocks `https://example.com`, allows `https://api.github.com/zen`, and attempts `https://<each-allowlisted-domain>`
+
+#### Allowlist
+
+- registry.npmjs.org
+- openrouter.ai
+- OpenAI / codex:
+  - api.openai.com
+  - auth.openai.com
+  - chatgpt.com
+- Anthropic / Claude Code:
+  - api.anthropic.com
+  - sentry.io
+  - statsig.anthropic.com
+  - statsig.com
+- GitHub (IP ranges fetched via GitHub meta API; SSH only to GitHub)
+
+Extra egress destinations can be added via `.agent-sandbox/config.json` and `~/.agent-sandbox/config.json`:
 
 ```json
 { "egress_allow_domains": ["example.com", "api.example.dev"] }
 ```
 
-## Protected Directories
+### Failure mode
+
+- If firewall setup or verification fails, the container exits non-zero (fail-closed).
+- `SKIP_FIREWALL=1` can be set intentionally to bypass (not recommended).
+
+### Protected Directories
 
 Readonly overlays prevent modification of sensitive paths:
 
 - `.git/hooks`
 - `.husky`
 - `.agent-sandbox`
-- `.ai-review/user-context.json`
 
 Additional paths can be configured in `.agent-sandbox/config.json`.
 
-## Git Integration
+### Git Integration
 
 `git-wrapper.sh` intercepts Git commands and blocks:
 
