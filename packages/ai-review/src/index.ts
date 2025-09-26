@@ -10,87 +10,88 @@ import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 
 import { initAiReview } from "./init.ts";
-import { ensureDir, getJobsDir, getReviewsDir, resolveRepoRoot } from "./paths.ts";
+import { ensureDir, getJobsDir, getReviewsDir, loadEnv, resolveRepoRoot } from "./paths.ts";
 import { prepareReview, createReviewJob } from "./review.ts";
 import type { ReviewOptions, ReviewRequest } from "./types.ts";
 import { previewMessages } from "./openai.ts";
 import { runWorker } from "./worker.ts";
 
-const program = new Command();
-program.name("ai-review").description("AI-powered code review assistant");
+async function main() {
+  const program = new Command();
+  program.name("ai-review").description("AI-powered code review assistant");
 
-const collect = (value: string, previous: string[]) => {
-  previous.push(value);
-  return previous;
-};
+  const repoRoot = await resolveRepoRoot();
+  await loadEnv(repoRoot);
 
-program
-  .command("init")
-  .description("Initialize .ai-review from the template")
-  .option("--force", "Reinitialize while preserving env and data directories", false)
-  .action(async (options: { force?: boolean }) => {
-    const repoRoot = await resolveRepoRoot();
-    await initAiReview(repoRoot, { force: options.force });
-    console.log("Initialized .ai-review directory.");
-  });
+  const collect = (value: string, previous: string[]) => {
+    previous.push(value);
+    return previous;
+  };
 
-program
-  .command("staged")
-  .description("Review staged changes")
-  .option("--project-context <glob>", "Glob for project context (repeatable)", collect, [] as string[])
-  .option("--objective <message>", "Objective for the review")
-  .option("--preview", "Preview the messages without sending")
-  .option("--dry-run", "Run pipeline without contacting the API")
-  .option("--dangerously-allow-secrets", "Redact secrets and continue")
-  .action(async (options) => {
-    const repoRoot = await resolveRepoRoot();
-    await handleReview(repoRoot, "staged", undefined, undefined, normalizeOptions(options));
-  });
+  program
+    .command("init")
+    .description("Initialize .ai-review from the template")
+    .option("--force", "Reinitialize while preserving env and data directories", false)
+    .action(async (options: { force?: boolean }) => {
+      await initAiReview(repoRoot, { force: options.force });
+      console.log("Initialized .ai-review directory.");
+    });
 
-program
-  .command("tail <jobKey>")
-  .description("Attach to a running review job")
-  .action(async (jobKey: string) => {
-    const repoRoot = await resolveRepoRoot();
-    await tailJob(repoRoot, jobKey);
-  });
+  program
+    .command("staged")
+    .description("Review staged changes")
+    .option("--project-context <glob>", "Glob for project context (repeatable)", collect, [] as string[])
+    .option("--objective <message>", "Objective for the review")
+    .option("--preview", "Preview the messages without sending")
+    .option("--dry-run", "Run pipeline without contacting the API")
+    .option("--dangerously-allow-secrets", "Redact secrets and continue")
+    .action(async (options) => {
+      await handleReview(repoRoot, "staged", undefined, undefined, normalizeOptions(options));
+    });
 
-program
-  .command("show-review [file]")
-  .description("Show a saved review (defaults to most recent)")
-  .action(async (file?: string) => {
-    const repoRoot = await resolveRepoRoot();
-    const reviewFile = await resolveReviewFile(repoRoot, file);
-    const contents = await fs.readFile(reviewFile, "utf8");
-    console.log(contents);
-  });
+  program
+    .command("tail <jobKey>")
+    .description("Attach to a running review job")
+    .action(async (jobKey: string) => {
+      await tailJob(repoRoot, jobKey);
+    });
 
-program
-  .command("worker <jobKey>")
-  .description("Internal worker command")
-  .option("--repo <path>", "Repository root")
-  .action(async (jobKey: string, options: { repo?: string }) => {
-    const repoRoot = options.repo ? path.resolve(options.repo) : await resolveRepoRoot();
-    const exit = await runWorker(repoRoot, jobKey);
-    process.exit(exit);
-  });
+  program
+    .command("show-review [file]")
+    .description("Show a saved review (defaults to most recent)")
+    .action(async (file?: string) => {
+      const reviewFile = await resolveReviewFile(repoRoot, file);
+      const contents = await fs.readFile(reviewFile, "utf8");
+      console.log(contents);
+    });
 
-program
-  .argument("[old]")
-  .argument("[new]")
-  .option("--project-context <glob>", "Glob for project context (repeatable)", collect, [] as string[])
-  .option("--objective <message>", "Objective for the review")
-  .option("--preview", "Preview the messages without sending")
-  .option("--dry-run", "Run pipeline without contacting the API")
-  .option("--dangerously-allow-secrets", "Redact secrets and continue")
-  .action(async (oldArg: string | undefined, newArg: string | undefined, options) => {
-    const repoRoot = await resolveRepoRoot();
-    const oldRevision = oldArg ?? (await defaultOldRevision());
-    const newRevision = newArg ?? "HEAD";
-    await handleReview(repoRoot, "range", oldRevision, newRevision, normalizeOptions(options));
-  });
+  program
+    .command("worker <jobKey>")
+    .description("Internal worker command")
+    .option("--repo <path>", "Repository root")
+    .action(async (jobKey: string, options: { repo?: string }) => {
+      const exit = await runWorker(options.repo ? path.resolve(options.repo) : repoRoot, jobKey);
+      process.exit(exit);
+    });
 
-program.parseAsync(process.argv).catch((error) => {
+  program
+    .argument("[old]")
+    .argument("[new]")
+    .option("--project-context <glob>", "Glob for project context (repeatable)", collect, [] as string[])
+    .option("--objective <message>", "Objective for the review")
+    .option("--preview", "Preview the messages without sending")
+    .option("--dry-run", "Run pipeline without contacting the API")
+    .option("--dangerously-allow-secrets", "Redact secrets and continue")
+    .action(async (oldArg: string | undefined, newArg: string | undefined, options) => {
+      const oldRevision = oldArg ?? (await defaultOldRevision());
+      const newRevision = newArg ?? "HEAD";
+      await handleReview(repoRoot, "range", oldRevision, newRevision, normalizeOptions(options));
+    });
+
+  await program.parseAsync(process.argv);
+}
+
+main().catch((error) => {
   console.error(error instanceof Error ? error.message : String(error));
   process.exitCode = (error as { exitCode?: number })?.exitCode ?? 1;
 });

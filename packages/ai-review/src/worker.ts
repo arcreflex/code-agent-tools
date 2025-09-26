@@ -1,8 +1,11 @@
 import { appendJobLog, loadJob, saveReview, updateJob } from "./jobs.ts";
 import { executeReview } from "./openai.ts";
+import { loadEnv } from "./paths.ts";
 import type { FinalReview } from "./types.ts";
 
 export async function runWorker(repoRoot: string, jobKey: string): Promise<number> {
+  await loadEnv(repoRoot);
+
   let job = await loadJob(repoRoot, jobKey);
   job = await updateJob(repoRoot, job, { status: "running" });
   try {

@@ -2,7 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const TEMPLATE_DIR = path.resolve(path.dirname(fileURLToPath(new URL(".", import.meta.url))), "../template");
+const TEMPLATE_DIR = fileURLToPath(new URL("../template", import.meta.url));
 
 export async function resolveRepoRoot(start: string = process.cwd()): Promise<string> {
   let current = path.resolve(start);
@@ -51,4 +51,15 @@ export function getSystemPromptPaths(repoRoot: string): string[] {
 
 export async function ensureDir(dir: string): Promise<void> {
   await fs.mkdir(dir, { recursive: true });
+}
+
+export async function loadEnv(repoRoot: string): Promise<void> {
+  for (const file of [`${repoRoot}/.env`, `${getAiReviewDir(repoRoot)}/.env`]) {
+    try {
+      await fs.access(file);
+      process.loadEnvFile(file);
+    } catch {
+      // pass
+    }
+  }
 }

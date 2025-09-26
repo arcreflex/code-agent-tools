@@ -117,14 +117,12 @@ function buildMessages(systemPrompt: string, request: ReviewRequest): OpenAI.Cha
       blocks.push(`- ${message}`);
     }
   }
-  blocks.push("", "# DIFF");
-  blocks.push(request.diff);
   if (request.contextFiles.length > 0) {
     blocks.push("", "# CODEBASE CONTEXT");
     for (const file of request.contextFiles) {
-      blocks.push(`## ${file.path}`);
-      blocks.push(file.content);
+      blocks.push(`<file path="${file.path}">`, file.content, "</file>");
     }
+    blocks.push("</codebase_context>");
   }
   if (request.omittedContext.length > 0) {
     blocks.push("", "# OMITTED CONTEXT (file paths)");
@@ -132,6 +130,10 @@ function buildMessages(systemPrompt: string, request: ReviewRequest): OpenAI.Cha
       blocks.push(`- ${file}`);
     }
   }
+
+  blocks.push("", "# DIFF FOR REVIEW");
+  blocks.push(request.diff);
+
   return [
     { role: "system", content: systemPrompt },
     { role: "user", content: blocks.join("\n") },
