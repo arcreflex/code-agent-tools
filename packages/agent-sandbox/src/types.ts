@@ -16,6 +16,12 @@ export interface ShellOptions extends StartOptions {
   readonly repoPath?: string;
 }
 
+export interface ExecOptions extends StartOptions {
+  readonly admin?: boolean;
+  readonly env?: string[];
+  readonly printCmd?: boolean;
+}
+
 export interface BuildOptions {
   readonly baseTag: string;
 }
@@ -36,5 +42,9 @@ export interface RepoInfo {
 
 export interface RunCommandInfo {
   readonly image: string;
+  readonly args: string[];
+}
+
+export interface ExecCommandInfo {
   readonly args: string[];
 }

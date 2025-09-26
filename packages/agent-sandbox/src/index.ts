@@ -7,6 +7,7 @@ import { Command } from "commander";
 
 import {
   buildBaseImage,
+  buildExecCommand,
   buildRepoImage,
   containerRunning,
   ensureContainerStopped,
@@ -14,19 +15,26 @@ import {
   listSharedVolumes,
   listVolumes,
   openShell,
+  formatDockerCommand,
   showRunCommand,
   startContainer,
   buildRunCommand,
+  runDockerCommand,
   imageExists,
 } from "./docker.js";
 import { ensureSandboxInitialized } from "./fs.js";
 import { ensureRepoProvisioned } from "./provision.js";
 import { getContainerName, getRepoImageName, getRepoInfo, loadSandboxConfig, resolveRepoPath } from "./paths.js";
 import { initCodexConfig } from "./codex.js";
-import type { BuildBaseOptions, BuildOptions, ShellOptions, StartOptions } from "./types.js";
+import type { BuildBaseOptions, BuildOptions, ExecOptions, ShellOptions, StartOptions } from "./types.js";
 
 const program = new Command();
 program.name("agent-sandbox").description("Docker-based sandbox manager for coding agents");
+
+const collectEnv = (value: string, previous: string[]) => {
+  previous.push(value);
+  return previous;
+};
 
 program
   .command("build-base")
@@ -56,7 +64,9 @@ program
 
 program
   .command("build [path]")
-  .description("Build the per-repository sandbox image")
+  .description(
+    "Build the per-repository sandbox image. If no .agent-sandbox/Dockerfile exists, use shell --build or exec --build to fall back to the base image.",
+  )
   .option("--base-tag <tag>", "Base image tag to use", "latest")
   .action(async (pathArg: string | undefined, options: BuildOptions) => {
     const repoPath = await resolveRepoPath(pathArg);
@@ -120,6 +130,27 @@ program
     });
     process.exitCode = exitCode;
   });
+
+program
+  .command("exec [path]")
+  .description("Execute a non-interactive command in the sandbox")
+  .allowExcessArguments(true)
+  .option("--branch <branch>", "Worktree branch to provision")
+  .option("--base-tag <tag>", "Base image tag to use", "latest")
+  .option("--build", "Build the per-repo image before starting", false)
+  .option("--env <key=value>", "Environment variable to set", collectEnv, [] as string[])
+  .option("--print-cmd", "Print the docker run/exec invocations", false)
+  .option("--admin", "Disable read-only overlays", false)
+  .action(
+    async (
+      pathArg: string | undefined,
+      options: ExecOptions & { env: string[]; admin?: boolean; printCmd?: boolean },
+      command: Command,
+    ) => {
+      const exitCode = await handleExecCommand(pathArg, options, command);
+      process.exitCode = exitCode;
+    },
+  );
 
 program
   .command("show-run [path]")
@@ -214,4 +245,64 @@ async function resolveImage(info: ReturnType<typeof getRepoInfo>, options: Start
   }
   const fallback = `agent-sandbox-base:${options.baseTag}`;
   return fallback;
+}
+
+async function handleExecCommand(
+  pathArg: string | undefined,
+  options: ExecOptions & { env: string[]; admin?: boolean; printCmd?: boolean },
+  command: Command,
+): Promise<number> {
+  const parentCommand = command.parent as (Command & { rawArgs?: string[] }) | undefined;
+  const rawArgs = parentCommand?.rawArgs ?? [];
+  const doubleDashIndex = rawArgs.indexOf("--");
+  const commandArgs = doubleDashIndex === -1 ? command.args : rawArgs.slice(doubleDashIndex + 1);
+  if (commandArgs.length === 0) {
+    console.error("agent-sandbox exec requires a command to run.");
+    return 2;
+  }
+
+  const repoCandidate = doubleDashIndex !== -1 ? pathArg : undefined;
+  let repoPath: string;
+  try {
+    repoPath = await resolveRepoPath(repoCandidate);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    return 2;
+  }
+
+  const envEntries: string[] = [];
+  for (const entry of options.env ?? []) {
+    if (!entry.includes("=") || entry.startsWith("=")) {
+      console.error(`Invalid --env value: ${entry}`);
+      return 2;
+    }
+    envEntries.push(entry);
+  }
+
+  await ensureSandboxInitialized(repoPath);
+  const info = getRepoInfo(repoPath);
+  const config = await loadSandboxConfig(repoPath);
+  const image = await resolveImage(info, options);
+  const admin = Boolean(options.admin);
+  let containerIsRunning = await containerRunning(info);
+  if (admin && containerIsRunning) {
+    await ensureContainerStopped(info);
+    containerIsRunning = false;
+  }
+  let startedRunArgs: string[] | undefined;
+  if (!containerIsRunning) {
+    const runInfo = await startContainer(info, image, config, options, { admin });
+    startedRunArgs = runInfo.args;
+    containerIsRunning = true;
+  }
+  const branchName = await ensureRepoProvisioned(repoPath, options.branch);
+  const execCommand = buildExecCommand(info, branchName, commandArgs, { env: envEntries });
+  if (options.printCmd) {
+    if (startedRunArgs) {
+      console.log(formatDockerCommand(["docker", ...startedRunArgs]));
+    }
+    console.log(formatDockerCommand(["docker", ...execCommand.args]));
+  }
+  const exitCode = await runDockerCommand(execCommand.args);
+  return exitCode;
 }

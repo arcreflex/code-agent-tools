@@ -5,9 +5,18 @@ import OpenAI from "openai";
 import type { FinalReview, ReviewRequest } from "./types.js";
 import { getSystemPromptPaths } from "./paths.js";
 
+const DEFAULT_BASE_URL = "https://api.openai.com/v1";
+
 export interface ReviewExecutionOptions {
   readonly repoRoot: string;
   readonly request: ReviewRequest;
+}
+
+export interface PreviewEnvelope {
+  readonly model: string;
+  readonly baseURL: string;
+  readonly extraParams: Record<string, unknown>;
+  readonly toolSchema: string;
 }
 
 export async function executeReview(options: ReviewExecutionOptions): Promise<FinalReview> {
@@ -15,15 +24,12 @@ export async function executeReview(options: ReviewExecutionOptions): Promise<Fi
   const systemPrompt = await loadSystemPrompt(repoRoot);
   const client = new OpenAI({
     apiKey: process.env.AI_REVIEW_OPENAI_KEY ?? process.env.AGENT_PRECOMMIT_OPENAI_KEY,
-    baseURL: process.env.AI_REVIEW_OPENAI_BASE_URL,
+    baseURL: resolveBaseURL(),
   });
-  const model = process.env.AI_REVIEW_MODEL ?? process.env.AGENT_PRECOMMIT_MODEL;
   if (!client.apiKey) {
     throw new Error("AI_REVIEW_OPENAI_KEY environment variable is required.");
   }
-  if (!model) {
-    throw new Error("AI_REVIEW_MODEL environment variable is required.");
-  }
+  const model = resolveModel();
 
   const extraParams = parseExtraParams();
 
@@ -88,10 +94,15 @@ export async function previewMessages(
 ): Promise<{
   system: string;
   user: string;
+  envelope: PreviewEnvelope;
 }> {
   const systemPrompt = await loadSystemPrompt(repoRoot);
   const [systemMessage, userMessage] = buildMessages(systemPrompt, request);
-  return { system: String(systemMessage.content), user: String(userMessage.content) };
+  return {
+    system: String(systemMessage.content),
+    user: String(userMessage.content),
+    envelope: getPreviewEnvelope(),
+  };
 }
 
 function buildMessages(systemPrompt: string, request: ReviewRequest): OpenAI.Chat.ChatCompletionMessageParam[] {
@@ -140,6 +151,29 @@ async function loadSystemPrompt(repoRoot: string): Promise<string> {
     }
   }
   throw new Error("Unable to load system prompt. Run ai-review init first.");
+}
+
+function resolveBaseURL(): string {
+  return process.env.AI_REVIEW_OPENAI_BASE_URL ?? process.env.AGENT_PRECOMMIT_OPENAI_BASE_URL ?? DEFAULT_BASE_URL;
+}
+
+function resolveModel(): string {
+  const model = process.env.AI_REVIEW_MODEL ?? process.env.AGENT_PRECOMMIT_MODEL;
+  if (!model) {
+    throw new Error("AI_REVIEW_MODEL environment variable is required.");
+  }
+  return model;
+}
+
+export function getPreviewEnvelope(): PreviewEnvelope {
+  const extraParams = parseExtraParams();
+  const model = process.env.AI_REVIEW_MODEL ?? process.env.AGENT_PRECOMMIT_MODEL ?? "(unset)";
+  return {
+    model,
+    baseURL: resolveBaseURL(),
+    extraParams,
+    toolSchema: "finalize_review (required)",
+  };
 }
 
 function parseExtraParams(): Record<string, unknown> {
