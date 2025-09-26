@@ -7,6 +7,8 @@ import type { ContextFile } from "./types.ts";
 
 const DEFAULT_MAX_BYTES = 200 * 1024;
 
+const DEFAULT_EXCLUDES = ["package-lock.json", "yarn.lock", "pnpm-lock.yaml", "Cargo.lock", ".ai-review/**"];
+
 export async function buildContext(
   repoRoot: string,
   trackedFiles: readonly string[],
@@ -21,25 +23,28 @@ export async function buildContext(
   const omitted: string[] = [];
   let used = 0;
 
-  for (const pattern of patterns) {
-    for (const file of trackedFiles) {
-      if (included.has(file)) {
-        continue;
-      }
-      if (!minimatch(file, pattern, { dot: true })) {
-        continue;
-      }
-      const absolute = path.join(repoRoot, file);
-      const content = await fs.readFile(absolute, "utf8");
-      const bytes = Buffer.byteLength(content, "utf8");
-      if (used + bytes > maxBytes) {
-        omitted.push(file);
-        continue;
-      }
-      included.add(file);
-      used += bytes;
-      files.push({ path: file, content, truncated: false });
+  for (const file of trackedFiles) {
+    if (included.has(file)) {
+      continue;
     }
+
+    if (DEFAULT_EXCLUDES.some((pattern) => minimatch(file, pattern, { dot: true }))) {
+      continue;
+    }
+    if (!patterns.some((pattern) => minimatch(file, pattern, { dot: true }))) {
+      continue;
+    }
+
+    const absolute = path.join(repoRoot, file);
+    const content = await fs.readFile(absolute, "utf8");
+    const bytes = Buffer.byteLength(content, "utf8");
+    if (used + bytes > maxBytes) {
+      omitted.push(file);
+      continue;
+    }
+    included.add(file);
+    used += bytes;
+    files.push({ path: file, content, truncated: false });
   }
   return { files, omitted };
 }
