@@ -6,10 +6,11 @@ import type { RepoInfo } from "./types.js";
 
 $.verbose = false;
 
-export async function ensureRepoProvisioned(repoPath: string, branch?: string): Promise<void> {
+export async function ensureRepoProvisioned(repoPath: string, branch?: string): Promise<string> {
   const info = getRepoInfo(repoPath);
   const checkout = branch ?? (await detectDefaultBranch(info));
   await provisionRepo(info, checkout);
+  return checkout;
 }
 
 async function detectDefaultBranch(info: RepoInfo): Promise<string> {

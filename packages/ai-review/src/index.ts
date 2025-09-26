@@ -108,6 +108,7 @@ async function handleReview(
 
   if (options.preview) {
     const preview = await previewMessages(repoRoot, request);
+    console.log(JSON.stringify(preview.envelope, null, 2));
     console.log("\n--- SYSTEM PROMPT ---\n");
     console.log(preview.system);
     console.log("\n--- USER MESSAGE ---\n");

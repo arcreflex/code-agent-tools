@@ -1,10 +1,20 @@
 import { spawn } from "node:child_process";
+import { promises as fs } from "node:fs";
 import { once } from "node:events";
+import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { $ } from "zx";
 
-import type { BuildBaseOptions, BuildOptions, RepoInfo, RunCommandInfo, SandboxConfig, StartOptions } from "./types.js";
+import type {
+  BuildBaseOptions,
+  BuildOptions,
+  ExecCommandInfo,
+  RepoInfo,
+  RunCommandInfo,
+  SandboxConfig,
+  StartOptions,
+} from "./types.js";
 import {
   getBaseImageDir,
   getConfigVolume,
@@ -15,23 +25,20 @@ import {
   getSandboxDirPath,
   getWorktreePath,
 } from "./paths.js";
+import { resolveBaseImageVersions } from "./versions.js";
+import type { BaseImageVersions } from "./versions.js";
 
 $.verbose = false;
 
 export async function buildBaseImage(options: BuildBaseOptions): Promise<void> {
   const baseDir = getBaseImageDir();
+  const versions = await resolveBaseImageVersions(options);
+  printResolvedVersions(versions);
   const args = ["build", "-t", `agent-sandbox-base:${options.tag}`];
-  const buildArgs: Array<[string, string | undefined]> = [
-    ["CLAUDE_CODE_VERSION", options.claudeCodeVersion],
-    ["CODEX_VERSION", options.codexVersion],
-    ["GIT_DELTA_VERSION", options.gitDeltaVersion],
-    ["AST_GREP_VERSION", options.astGrepVersion],
-  ];
-  for (const [name, value] of buildArgs) {
-    if (value) {
-      args.push("--build-arg", `${name}=${value}`);
-    }
-  }
+  args.push("--build-arg", `CLAUDE_CODE_VERSION=${versions.claudeCode}`);
+  args.push("--build-arg", `CODEX_VERSION=${versions.codex}`);
+  args.push("--build-arg", `GIT_DELTA_VERSION=${versions.gitDelta}`);
+  args.push("--build-arg", `AST_GREP_VERSION=${versions.astGrep}`);
   args.push(baseDir);
   await $`docker ${args}`;
 }
@@ -66,8 +73,12 @@ export async function startContainer(
   image: string,
   config: SandboxConfig,
   options: StartOptions,
-): Promise<void> {
-  const run = buildRunCommand(info, image, config, options, { detached: true });
+  extra?: { admin?: boolean },
+): Promise<RunCommandInfo> {
+  const run = buildRunCommand(info, image, config, options, {
+    detached: true,
+    admin: extra?.admin,
+  });
   await ensureContainerStopped(info);
   await ensureVolumes(info);
   await $`docker ${["run", ...run.args]}`;
@@ -83,6 +94,7 @@ export async function startContainer(
         : "Container failed to start. Check docker logs for details.",
     );
   }
+  return run;
 }
 
 export function buildRunCommand(
@@ -173,10 +185,26 @@ export async function openShell(info: RepoInfo, branch: string | undefined, asRo
   const workdir = branch ? getWorktreePath(branch) : `/workspace/${info.name}`;
   args.push("--workdir", workdir);
   args.push("bash");
-  return runInteractiveDocker(args);
+  return runDockerCommand(args);
 }
 
-async function runInteractiveDocker(args: string[]): Promise<number> {
+export function buildExecCommand(
+  info: RepoInfo,
+  branch: string,
+  command: readonly string[],
+  options?: { env?: readonly string[] },
+): ExecCommandInfo {
+  const args = ["exec", "--workdir", getWorktreePath(branch)];
+  for (const entry of options?.env ?? []) {
+    args.push("--env", entry);
+  }
+  args.push(getContainerName(info));
+  args.push("--");
+  args.push(...command);
+  return { args };
+}
+
+export async function runDockerCommand(args: string[]): Promise<number> {
   const child = spawn("docker", args, { stdio: "inherit" });
   const [code] = (await once(child, "close")) as [number];
   return code ?? 0;
@@ -189,7 +217,128 @@ export async function showRunCommand(
   options: StartOptions,
 ): Promise<void> {
   const command = buildRunCommand(info, image, config, options, {});
-  console.log(["docker", ...command.args].join(" "));
+  const mountSummary = describeMounts(info, command.args);
+  if (mountSummary.length > 0) {
+    console.log("Mount summary:");
+    for (const entry of mountSummary) {
+      console.log(`  ${entry}`);
+    }
+  }
+  const allowlistCount = await countAllowlistDomains(info.path);
+  console.log(`Using allowlist from /.agent-sandbox/config.json (${allowlistCount} domains)`);
+  console.log(formatDockerCommand(["docker", ...command.args]));
+}
+
+function describeMounts(info: RepoInfo, args: readonly string[]): string[] {
+  const entries: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] !== "--mount") {
+      continue;
+    }
+    const value = args[index + 1];
+    if (!value) {
+      continue;
+    }
+    const mount = parseMountSpec(value);
+    const description = describeMount(info, mount);
+    const source = mount.type === "volume" ? `volume:${mount.src ?? ""}` : (mount.src ?? "");
+    const target = mount.dst ?? "";
+    const mode = mount.mode ?? "rw";
+    const prettySource = source || "(unspecified)";
+    const prettyTarget = target || "(unspecified)";
+    entries.push(`[${mode}] ${prettySource} -> ${prettyTarget} (${description})`);
+  }
+  return entries;
+}
+
+interface ParsedMount {
+  readonly type?: string;
+  readonly src?: string;
+  readonly dst?: string;
+  readonly mode?: "ro" | "rw";
+}
+
+function parseMountSpec(value: string): ParsedMount {
+  const segments = value.split(",");
+  const data = new Map<string, string>();
+  for (const segment of segments) {
+    const [key, raw] = segment.split("=", 2);
+    if (raw === undefined) {
+      data.set(segment, "");
+      continue;
+    }
+    data.set(key, raw);
+  }
+  const mode = data.has("ro") ? "ro" : "rw";
+  const src = data.get("src") ?? data.get("source");
+  const dst = data.get("dst") ?? data.get("destination") ?? data.get("target");
+  const type = data.get("type");
+  return { type, src, dst, mode } satisfies ParsedMount;
+}
+
+function describeMount(info: RepoInfo, mount: ParsedMount): string {
+  const repoRoot = `/workspace/${info.name}`;
+  if (mount.dst === "/.agent-sandbox") {
+    return "Sandbox configuration overlay";
+  }
+  if (mount.dst === "/repo-shelf") {
+    return "Persistent repo shelf";
+  }
+  if (mount.dst === "/commandhistory") {
+    return "Command history volume";
+  }
+  if (mount.dst === "/config") {
+    return "Firewall configuration volume";
+  }
+  if (mount.dst === repoRoot) {
+    return mount.mode === "ro" ? "Host repository (read-only)" : "Host repository";
+  }
+  if (mount.dst?.startsWith(`${repoRoot}/`)) {
+    const subPath = mount.dst.slice(repoRoot.length + 1);
+    return `Read-only overlay for ${subPath}`;
+  }
+  return "Custom mount";
+}
+
+async function countAllowlistDomains(repoPath: string): Promise<number> {
+  const configPath = path.join(repoPath, ".agent-sandbox", "config.json");
+  try {
+    const raw = await fs.readFile(configPath, "utf8");
+    const parsed = JSON.parse(raw) as { egress_allow_domains?: unknown };
+    const domains = Array.isArray(parsed.egress_allow_domains) ? parsed.egress_allow_domains : [];
+    return domains.length;
+  } catch (error) {
+    if ((error as { code?: string }).code === "ENOENT") {
+      return 0;
+    }
+    throw error;
+  }
+}
+
+export function formatDockerCommand(args: readonly string[]): string {
+  return args.map(quoteArg).join(" ");
+}
+
+function quoteArg(arg: string): string {
+  if (/^[-A-Za-z0-9._/:=+,]+$/.test(arg)) {
+    return arg;
+  }
+  return `'${arg.replace(/'/g, "'\\''")}'`;
+}
+
+function printResolvedVersions(versions: BaseImageVersions): void {
+  const entries: Array<[string, string]> = [
+    ["@anthropic-ai/claude-code", versions.claudeCode],
+    ["@openai/codex", versions.codex],
+    ["git-delta", versions.gitDelta],
+    ["@ast-grep/cli", versions.astGrep],
+  ];
+  const width = Math.max(...entries.map(([name]) => name.length));
+  console.log("Resolved versions:");
+  for (const [name, value] of entries) {
+    const padded = name.padEnd(width, " ");
+    console.log(`${padded} ->  ${value}`);
+  }
 }
 
 export async function listContainers(): Promise<void> {
