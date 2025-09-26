@@ -1,7 +1,7 @@
 import { $ } from "zx";
 import semver from "semver";
 
-import type { BuildBaseOptions } from "./types.js";
+import type { BuildBaseOptions } from "./types.ts";
 
 $.verbose = false;
 

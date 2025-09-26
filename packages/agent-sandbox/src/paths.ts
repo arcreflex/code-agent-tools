@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { RepoInfo, SandboxConfig } from "./types.js";
+import type { RepoInfo, SandboxConfig } from "./types.ts";
 
 const REPO_MARKER_FILENAME = "marker.txt";
 

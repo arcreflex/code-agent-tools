@@ -9,12 +9,12 @@ import { fileURLToPath } from "node:url";
 
 import { Command } from "commander";
 
-import { initAiReview } from "./init.js";
-import { ensureDir, getJobsDir, getReviewsDir, resolveRepoRoot } from "./paths.js";
-import { prepareReview, createReviewJob } from "./review.js";
-import type { ReviewOptions, ReviewRequest } from "./types.js";
-import { previewMessages } from "./openai.js";
-import { runWorker } from "./worker.js";
+import { initAiReview } from "./init.ts";
+import { ensureDir, getJobsDir, getReviewsDir, resolveRepoRoot } from "./paths.ts";
+import { prepareReview, createReviewJob } from "./review.ts";
+import type { ReviewOptions, ReviewRequest } from "./types.ts";
+import { previewMessages } from "./openai.ts";
+import { runWorker } from "./worker.ts";
 
 const program = new Command();
 program.name("ai-review").description("AI-powered code review assistant");

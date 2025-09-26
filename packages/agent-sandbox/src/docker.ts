@@ -14,7 +14,7 @@ import type {
   RunCommandInfo,
   SandboxConfig,
   StartOptions,
-} from "./types.js";
+} from "./types.ts";
 import {
   getBaseImageDir,
   getConfigVolume,
@@ -24,9 +24,9 @@ import {
   getRepoShelfVolume,
   getSandboxDirPath,
   getWorktreePath,
-} from "./paths.js";
-import { resolveBaseImageVersions } from "./versions.js";
-import type { BaseImageVersions } from "./versions.js";
+} from "./paths.ts";
+import { resolveBaseImageVersions } from "./versions.ts";
+import type { BaseImageVersions } from "./versions.ts";
 
 $.verbose = false;
 

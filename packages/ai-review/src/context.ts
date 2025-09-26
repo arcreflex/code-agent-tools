@@ -3,7 +3,7 @@ import path from "node:path";
 
 import { minimatch } from "minimatch";
 
-import type { ContextFile } from "./types.js";
+import type { ContextFile } from "./types.ts";
 
 const DEFAULT_MAX_BYTES = 200 * 1024;
 

@@ -1,10 +1,10 @@
 import crypto from "node:crypto";
 
-import { buildContext } from "./context.js";
-import { getCommitMessages, getDiff, getDiffStats, listTrackedFiles } from "./git.js";
-import { createJob } from "./jobs.js";
-import type { ReviewOptions, ReviewRequest, SecretMatch } from "./types.js";
-import { scanForSecrets } from "./secrets.js";
+import { buildContext } from "./context.ts";
+import { getCommitMessages, getDiff, getDiffStats, listTrackedFiles } from "./git.ts";
+import { createJob } from "./jobs.ts";
+import type { ReviewOptions, ReviewRequest, SecretMatch } from "./types.ts";
+import { scanForSecrets } from "./secrets.ts";
 
 export interface PreparationResult {
   readonly request: ReviewRequest;

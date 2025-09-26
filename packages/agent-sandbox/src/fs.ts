@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-import { getTemplateDir, getMarkerFilePath, getSandboxDirPath } from "./paths.js";
+import { getTemplateDir, getMarkerFilePath, getSandboxDirPath } from "./paths.ts";
 
 export async function ensureSandboxInitialized(repoPath: string): Promise<void> {
   const sandboxDir = getSandboxDirPath(repoPath);

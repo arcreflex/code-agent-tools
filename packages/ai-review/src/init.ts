@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-import { ensureDir, getAiReviewDir, getJobsDir, getReviewsDir, getTemplateDir } from "./paths.js";
+import { ensureDir, getAiReviewDir, getJobsDir, getReviewsDir, getTemplateDir } from "./paths.ts";
 
 export interface InitOptions {
   readonly force?: boolean;

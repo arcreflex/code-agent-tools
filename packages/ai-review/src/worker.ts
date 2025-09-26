@@ -1,6 +1,6 @@
-import { appendJobLog, loadJob, saveReview, updateJob } from "./jobs.js";
-import { executeReview } from "./openai.js";
-import type { FinalReview } from "./types.js";
+import { appendJobLog, loadJob, saveReview, updateJob } from "./jobs.ts";
+import { executeReview } from "./openai.ts";
+import type { FinalReview } from "./types.ts";
 
 export async function runWorker(repoRoot: string, jobKey: string): Promise<number> {
   let job = await loadJob(repoRoot, jobKey);

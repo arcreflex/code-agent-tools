@@ -1,4 +1,4 @@
-import type { SecretMatch } from "./types.js";
+import type { SecretMatch } from "./types.ts";
 
 const SECRET_PATTERNS: ReadonlyArray<{ pattern: RegExp; label: string }> = [
   { pattern: /api[_-]?key\s*[:=]\s*["']?[A-Za-z0-9_-]{20,}["']?/i, label: "Generic API key" },

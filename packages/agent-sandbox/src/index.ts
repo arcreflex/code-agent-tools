@@ -21,12 +21,12 @@ import {
   buildRunCommand,
   runDockerCommand,
   imageExists,
-} from "./docker.js";
-import { ensureSandboxInitialized } from "./fs.js";
-import { ensureRepoProvisioned } from "./provision.js";
-import { getContainerName, getRepoImageName, getRepoInfo, loadSandboxConfig, resolveRepoPath } from "./paths.js";
-import { initCodexConfig } from "./codex.js";
-import type { BuildBaseOptions, BuildOptions, ExecOptions, ShellOptions, StartOptions } from "./types.js";
+} from "./docker.ts";
+import { ensureSandboxInitialized } from "./fs.ts";
+import { ensureRepoProvisioned } from "./provision.ts";
+import { getContainerName, getRepoImageName, getRepoInfo, loadSandboxConfig, resolveRepoPath } from "./paths.ts";
+import { initCodexConfig } from "./codex.ts";
+import type { BuildBaseOptions, BuildOptions, ExecOptions, ShellOptions, StartOptions } from "./types.ts";
 
 const program = new Command();
 program.name("agent-sandbox").description("Docker-based sandbox manager for coding agents");

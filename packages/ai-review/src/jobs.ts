@@ -1,8 +1,8 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-import { ensureDir, getJobsDir, getReviewsDir } from "./paths.js";
-import type { FinalReview, ReviewJob, ReviewRequest } from "./types.js";
+import { ensureDir, getJobsDir, getReviewsDir } from "./paths.ts";
+import type { FinalReview, ReviewJob, ReviewRequest } from "./types.ts";
 
 export async function createJob(repoRoot: string, request: ReviewRequest): Promise<{ job: ReviewJob; path: string }> {
   const dir = getJobsDir(repoRoot);

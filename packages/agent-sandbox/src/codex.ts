@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 import { $ } from "zx";
 
-import { getConfigVolume } from "./paths.js";
+import { getConfigVolume } from "./paths.ts";
 
 $.verbose = false;
 

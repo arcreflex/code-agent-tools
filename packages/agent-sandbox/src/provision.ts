@@ -1,8 +1,8 @@
 import { $ } from "zx";
 
-import { execInContainer } from "./docker.js";
-import { getRepoInfo, getWorktreePath, sanitizeBranchName } from "./paths.js";
-import type { RepoInfo } from "./types.js";
+import { execInContainer } from "./docker.ts";
+import { getRepoInfo, getWorktreePath, sanitizeBranchName } from "./paths.ts";
+import type { RepoInfo } from "./types.ts";
 
 $.verbose = false;
 

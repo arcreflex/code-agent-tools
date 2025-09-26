@@ -2,8 +2,8 @@ import { promises as fs } from "node:fs";
 
 import OpenAI from "openai";
 
-import type { FinalReview, ReviewRequest } from "./types.js";
-import { getSystemPromptPaths } from "./paths.js";
+import type { FinalReview, ReviewRequest } from "./types.ts";
+import { getSystemPromptPaths } from "./paths.ts";
 
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
 
