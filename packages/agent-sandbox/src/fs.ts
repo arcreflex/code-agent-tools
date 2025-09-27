@@ -1,10 +1,10 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-import { getTemplateDir, getMarkerFilePath, getSandboxDirPath } from "./paths.ts";
+import { getTemplateDir, getMarkerFilePath } from "./paths.ts";
 
-export async function ensureSandboxInitialized(repoPath: string): Promise<void> {
-  const sandboxDir = getSandboxDirPath(repoPath);
+export async function initializeSandboxConfig(repoPath: string): Promise<void> {
+  const sandboxDir = path.join(repoPath, ".agent-sandbox");
   await fs.mkdir(sandboxDir, { recursive: true });
 
   const templateDir = getTemplateDir();

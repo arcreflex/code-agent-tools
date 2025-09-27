@@ -21,12 +21,13 @@ import {
   buildRunCommand,
   runDockerCommand,
   imageExists,
+  BASE_IMAGE_NAME,
 } from "./docker.ts";
-import { ensureSandboxInitialized } from "./fs.ts";
+import { initializeSandboxConfig } from "./fs.ts";
 import { ensureRepoProvisioned } from "./provision.ts";
-import { getContainerName, getRepoImageName, getRepoInfo, loadSandboxConfig, resolveRepoPath } from "./paths.ts";
+import { getContainerName, loadRepoAndConfigInfo, loadSandboxConfig, resolveRepoPath } from "./paths.ts";
 import { initCodexConfig } from "./codex.ts";
-import type { BuildBaseOptions, BuildOptions, ExecOptions, ShellOptions, StartOptions } from "./types.ts";
+import type { BuildBaseOptions, BuildOptions, ExecOptions, RepoInfo, ShellOptions, StartOptions } from "./types.ts";
 
 const program = new Command();
 program.name("agent-sandbox").description("Docker-based sandbox manager for coding agents");
@@ -55,9 +56,9 @@ program
   .option("--base-tag <tag>", "Base image tag to use", "latest")
   .action(async (pathArg: string | undefined, options: { build?: boolean; baseTag: string }) => {
     const repoPath = await resolveRepoPath(pathArg);
-    await ensureSandboxInitialized(repoPath);
+    await initializeSandboxConfig(repoPath);
     if (options.build) {
-      const info = getRepoInfo(repoPath);
+      const info = await loadRepoAndConfigInfo(repoPath);
       await buildRepoImage(info, { baseTag: options.baseTag });
     }
   });
@@ -70,8 +71,7 @@ program
   .option("--base-tag <tag>", "Base image tag to use", "latest")
   .action(async (pathArg: string | undefined, options: BuildOptions) => {
     const repoPath = await resolveRepoPath(pathArg);
-    const info = getRepoInfo(repoPath);
-    await ensureSandboxInitialized(repoPath);
+    const info = await loadRepoAndConfigInfo(repoPath);
     await buildRepoImage(info, { baseTag: options.baseTag });
   });
 
@@ -83,10 +83,9 @@ program
   .option("--build", "Build the per-repo image before starting", false)
   .action(async (pathArg: string | undefined, options: StartOptions) => {
     const repoPath = await resolveRepoPath(pathArg);
-    await ensureSandboxInitialized(repoPath);
-    const info = getRepoInfo(repoPath);
+    const info = await loadRepoAndConfigInfo(repoPath);
     const image = await resolveImage(info, options);
-    const config = await loadSandboxConfig(repoPath);
+    const config = await loadSandboxConfig(info);
     await startContainer(info, image, config, options);
     await ensureRepoProvisioned(repoPath, options.branch);
     console.log(`Container ${getContainerName(info)} started using ${image}.`);
@@ -97,7 +96,7 @@ program
   .description("Stop the sandbox container")
   .action(async (pathArg?: string) => {
     const repoPath = await resolveRepoPath(pathArg);
-    const info = getRepoInfo(repoPath);
+    const info = await loadRepoAndConfigInfo(repoPath);
     await ensureContainerStopped(info);
     console.log(`Stopped container ${getContainerName(info)}.`);
   });
@@ -158,10 +157,9 @@ program
   .option("--base-tag <tag>", "Base image tag to use", "latest")
   .action(async (pathArg: string | undefined, options: StartOptions) => {
     const repoPath = await resolveRepoPath(pathArg);
-    await ensureSandboxInitialized(repoPath);
-    const info = getRepoInfo(repoPath);
+    const info = await loadRepoAndConfigInfo(repoPath);
     const image = await resolveImage(info, options);
-    const config = await loadSandboxConfig(repoPath);
+    const config = await loadSandboxConfig(info);
     await showRunCommand(info, image, config, options);
   });
 
@@ -170,7 +168,7 @@ program
   .description("List volumes used by this repository sandbox")
   .action(async (pathArg?: string) => {
     const repoPath = await resolveRepoPath(pathArg);
-    const info = getRepoInfo(repoPath);
+    const info = await loadRepoAndConfigInfo(repoPath);
     await listVolumes(info);
   });
 
@@ -204,9 +202,8 @@ program.parseAsync(process.argv).catch((error) => {
 
 async function handleShellCommand(pathArg: string | undefined, options: ShellOptions): Promise<number> {
   const repoPath = options.repoPath ?? (await resolveRepoPath(pathArg));
-  await ensureSandboxInitialized(repoPath);
-  const info = getRepoInfo(repoPath);
-  const config = await loadSandboxConfig(repoPath);
+  const info = await loadRepoAndConfigInfo(repoPath);
+  const config = await loadSandboxConfig(info);
   const image = await resolveImage(info, options);
   if (options.admin) {
     return runAdminShell(info, image, config, options);
@@ -219,7 +216,7 @@ async function handleShellCommand(pathArg: string | undefined, options: ShellOpt
 }
 
 function runAdminShell(
-  info: ReturnType<typeof getRepoInfo>,
+  info: RepoInfo,
   image: string,
   config: Awaited<ReturnType<typeof loadSandboxConfig>>,
   options: ShellOptions,
@@ -234,17 +231,21 @@ function runAdminShell(
   });
 }
 
-async function resolveImage(info: ReturnType<typeof getRepoInfo>, options: StartOptions): Promise<string> {
-  const desired = `${getRepoImageName(info)}:${options.baseTag}`;
+async function resolveImage(info: RepoInfo, options: StartOptions): Promise<string> {
+  if (info.image.type === "base") {
+    return `${BASE_IMAGE_NAME}:${options.baseTag}`;
+  }
+
+  const desired = `${info.image.name}:${options.baseTag}`;
   if (await imageExists(desired)) {
     return desired;
   }
   if (options.build) {
     await buildRepoImage(info, { baseTag: options.baseTag });
     return desired;
+  } else {
+    throw new Error(`Image ${desired} not found and build option is disabled`);
   }
-  const fallback = `agent-sandbox-base:${options.baseTag}`;
-  return fallback;
 }
 
 async function handleExecCommand(
@@ -279,9 +280,8 @@ async function handleExecCommand(
     envEntries.push(entry);
   }
 
-  await ensureSandboxInitialized(repoPath);
-  const info = getRepoInfo(repoPath);
-  const config = await loadSandboxConfig(repoPath);
+  const info = await loadRepoAndConfigInfo(repoPath);
+  const config = await loadSandboxConfig(info);
   const image = await resolveImage(info, options);
   const admin = Boolean(options.admin);
   let containerIsRunning = await containerRunning(info);

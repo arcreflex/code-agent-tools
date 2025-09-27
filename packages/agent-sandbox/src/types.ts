@@ -36,7 +36,18 @@ export interface BuildBaseOptions {
 
 export interface RepoInfo {
   readonly name: string;
-  readonly path: string;
+  readonly repoPath: string;
+  /** Either the ${repoPath}/.agent-sandbox/config.json or ${home}/.agent-sandbox/config.json */
+  readonly configPath: string;
+  readonly image:
+    | {
+        type: "base";
+      }
+    | {
+        type: "repo";
+        dockerFilePath: string;
+        name: string;
+      };
   readonly hash: string;
 }
 

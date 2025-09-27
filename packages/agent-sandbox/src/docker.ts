@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
-import { existsSync, promises as fs } from "node:fs";
+import { existsSync } from "node:fs";
 import { once } from "node:events";
-import path from "node:path";
+import { dirname } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { $ } from "zx";
@@ -21,21 +21,22 @@ import {
   getConfigVolume,
   getContainerName,
   getHistoryVolume,
-  getRepoImageName,
   getRepoShelfVolume,
-  getSandboxDirPath,
   getWorktreePath,
+  loadSandboxConfig,
 } from "./paths.ts";
 import { resolveBaseImageVersions } from "./versions.ts";
 import type { BaseImageVersions } from "./versions.ts";
 
 $.verbose = false;
 
+export const BASE_IMAGE_NAME = "agent-sandbox-base";
+
 export async function buildBaseImage(options: BuildBaseOptions): Promise<void> {
   const baseDir = getBaseImageDir();
   const versions = await resolveBaseImageVersions(options);
   printResolvedVersions(versions);
-  const args = ["build", "-t", `agent-sandbox-base:${options.tag}`];
+  const args = ["build", "-t", `${BASE_IMAGE_NAME}:${options.tag}`];
   args.push("--build-arg", `CLAUDE_CODE_VERSION=${versions.claudeCode}`);
   args.push("--build-arg", `CODEX_VERSION=${versions.codex}`);
   args.push("--build-arg", `GIT_DELTA_VERSION=${versions.gitDelta}`);
@@ -45,9 +46,11 @@ export async function buildBaseImage(options: BuildBaseOptions): Promise<void> {
 }
 
 export async function buildRepoImage(info: RepoInfo, options: BuildOptions): Promise<string> {
-  const dockerfile = `${info.path}/.agent-sandbox/Dockerfile`;
-  const image = `${getRepoImageName(info)}:${options.baseTag}`;
-  await $`docker build -f ${dockerfile} -t ${image} --build-arg BASE_IMAGE_TAG=${options.baseTag} ${info.path}`;
+  if (info.image.type !== "repo") {
+    throw new Error(`No Dockerfile found for repository image`);
+  }
+  const image = `${info.image.name}:${options.baseTag}`;
+  await $`docker build -f ${info.image.dockerFilePath} -t ${image} --build-arg BASE_IMAGE_TAG=${options.baseTag} ${info.repoPath}`;
   return image;
 }
 
@@ -101,7 +104,7 @@ export async function startContainer(
 export function buildMounts(info: RepoInfo, config: SandboxConfig, extra?: { admin?: boolean }): MountSpec[] {
   const mounts: MountSpec[] = [];
   if (!extra?.admin) {
-    const sandboxDir = getSandboxDirPath(info.path);
+    const sandboxDir = dirname(info.configPath);
     mounts.push({
       description: "Sandbox configuration overlay",
       dst: "/.agent-sandbox",
@@ -134,7 +137,7 @@ export function buildMounts(info: RepoInfo, config: SandboxConfig, extra?: { adm
     type: "volume",
   });
 
-  const repoMountSrc = info.path;
+  const repoMountSrc = info.repoPath;
   const repoMountDst = `/workspace/${info.name}`;
   mounts.push({
     description: "Host repository",
@@ -146,7 +149,7 @@ export function buildMounts(info: RepoInfo, config: SandboxConfig, extra?: { adm
 
   if (!extra?.admin) {
     for (const readonly of config.readonly) {
-      const src = `${info.path}/${readonly}`;
+      const src = `${info.repoPath}/${readonly}`;
       const dst = `/workspace/${info.name}/${readonly}`;
       if (existsSync(src)) {
         mounts.push({
@@ -184,10 +187,10 @@ export function buildRunCommand(
     args.push("--name", containerName);
   }
   args.push("--label", "agent-sandbox=1");
-  args.push("--label", `repo-path=${info.path}`);
+  args.push("--label", `repo-path=${info.repoPath}`);
   args.push("--label", `repo-name=${info.name}`);
   args.push("--env", `REPO_NAME=${info.name}`);
-  args.push("--env", `SANDBOX_REPO_PATH=${info.path}`);
+  args.push("--env", `SANDBOX_REPO_PATH=${info.repoPath}`);
   args.push("--env", "CONFIG_VOLUME=/config");
   args.push("--cap-add", "NET_ADMIN");
   args.push("--cap-add", "NET_RAW");
@@ -276,7 +279,7 @@ export async function showRunCommand(
       console.log(`  ${entry}`);
     }
   }
-  const allowlistCount = await countAllowlistDomains(info.path);
+  const allowlistCount = (await loadSandboxConfig(info)).egress_allow_domains.length;
   console.log(`Using allowlist from /.agent-sandbox/config.json (${allowlistCount} domains)`);
   console.log(formatDockerCommand(["docker", ...command.args]));
 }
@@ -292,21 +295,6 @@ function describeMounts(mounts: readonly MountSpec[]): string[] {
     entries.push(`[${mode}] ${prettySource} -> ${prettyTarget} (${mount.description})`);
   }
   return entries;
-}
-
-async function countAllowlistDomains(repoPath: string): Promise<number> {
-  const configPath = path.join(repoPath, ".agent-sandbox", "config.json");
-  try {
-    const raw = await fs.readFile(configPath, "utf8");
-    const parsed = JSON.parse(raw) as { egress_allow_domains?: unknown };
-    const domains = Array.isArray(parsed.egress_allow_domains) ? parsed.egress_allow_domains : [];
-    return domains.length;
-  } catch (error) {
-    if ((error as { code?: string }).code === "ENOENT") {
-      return 0;
-    }
-    throw error;
-  }
 }
 
 export function formatDockerCommand(args: readonly string[]): string {

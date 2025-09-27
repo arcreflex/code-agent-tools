@@ -1,20 +1,20 @@
 import { $ } from "zx";
 
 import { execInContainer } from "./docker.ts";
-import { getRepoInfo, getWorktreePath, sanitizeBranchName } from "./paths.ts";
+import { loadRepoAndConfigInfo, getWorktreePath, sanitizeBranchName } from "./paths.ts";
 import type { RepoInfo } from "./types.ts";
 
 $.verbose = false;
 
 export async function ensureRepoProvisioned(repoPath: string, branch?: string): Promise<string> {
-  const info = getRepoInfo(repoPath);
+  const info = await loadRepoAndConfigInfo(repoPath);
   const checkout = branch ?? (await detectDefaultBranch(info));
   await provisionRepo(info, checkout);
   return checkout;
 }
 
 async function detectDefaultBranch(info: RepoInfo): Promise<string> {
-  const result = await $`git -C ${info.path} symbolic-ref --short HEAD`;
+  const result = await $`git -C ${info.repoPath} symbolic-ref --short HEAD`;
   const branch = result.stdout.trim() || "main";
   return branch;
 }
