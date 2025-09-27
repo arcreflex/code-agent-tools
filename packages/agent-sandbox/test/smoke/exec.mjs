@@ -32,10 +32,9 @@ async function testExecHappyPath(repo) {
     "repo shelf should be provisioned",
   );
   await assertSuccess(
-    runCli(
-      ["exec", "--branch", branch, "--", "test", "-d", `/repo-shelf/worktrees/${sanitizedBranch}/.git`],
-      { cwd: repo },
-    ),
+    runCli(["exec", "--branch", branch, "--", "test", "-d", `/repo-shelf/worktrees/${sanitizedBranch}/.git`], {
+      cwd: repo,
+    }),
     "worktree should be provisioned",
   );
 }
@@ -92,7 +91,7 @@ async function git(cwd, ...args) {
     cwd: cwd ?? process.cwd(),
     stdio: ["ignore", "pipe", "pipe"],
   });
-  const [code] = (await once(child, "close")) as [number];
+  const [code] = await once(child, "close");
   const stderr = child.stderr ? await readStream(child.stderr) : "";
   if ((code ?? 0) !== 0) {
     throw new Error(`git ${args.join(" ")} failed: ${stderr}`);
@@ -106,7 +105,7 @@ async function runCli(args, { cwd, env } = {}) {
     env: childEnv,
     stdio: ["ignore", "pipe", "pipe"],
   });
-  const [code] = (await once(child, "close")) as [number];
+  const [code] = await once(child, "close");
   const stdout = child.stdout ? await readStream(child.stdout) : "";
   const stderr = child.stderr ? await readStream(child.stderr) : "";
   return { exitCode: code ?? 0, stdout, stderr };

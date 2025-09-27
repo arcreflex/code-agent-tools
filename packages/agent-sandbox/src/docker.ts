@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { promises as fs } from "node:fs";
+import { existsSync, promises as fs } from "node:fs";
 import { once } from "node:events";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -10,6 +10,7 @@ import type {
   BuildBaseOptions,
   BuildOptions,
   ExecCommandInfo,
+  MountSpec,
   RepoInfo,
   RunCommandInfo,
   SandboxConfig,
@@ -81,7 +82,7 @@ export async function startContainer(
   });
   await ensureContainerStopped(info);
   await ensureVolumes(info);
-  await $`docker ${["run", ...run.args]}`;
+  await $`docker ${run.args}`;
   await delay(500);
   if (!(await containerRunning(info))) {
     const name = getContainerName(info);
@@ -95,6 +96,71 @@ export async function startContainer(
     );
   }
   return run;
+}
+
+export function buildMounts(info: RepoInfo, config: SandboxConfig, extra?: { admin?: boolean }): MountSpec[] {
+  const mounts: MountSpec[] = [];
+  if (!extra?.admin) {
+    const sandboxDir = getSandboxDirPath(info.path);
+    mounts.push({
+      description: "Sandbox configuration overlay",
+      dst: "/.agent-sandbox",
+      mode: "ro",
+      src: sandboxDir,
+      type: "bind",
+    });
+  }
+  const repoShelfVolume = getRepoShelfVolume(info);
+  mounts.push({
+    description: "Persistent repo shelf",
+    dst: "/repo-shelf",
+    mode: "rw",
+    src: repoShelfVolume,
+    type: "volume",
+  });
+  const historyVolume = getHistoryVolume(info);
+  mounts.push({
+    description: "Command history volume",
+    dst: "/commandhistory",
+    mode: "rw",
+    src: historyVolume,
+    type: "volume",
+  });
+  mounts.push({
+    description: "Configuration volume",
+    dst: "/config",
+    mode: "rw",
+    src: getConfigVolume(),
+    type: "volume",
+  });
+
+  const repoMountSrc = info.path;
+  const repoMountDst = `/workspace/${info.name}`;
+  mounts.push({
+    description: "Host repository",
+    dst: repoMountDst,
+    mode: "rw",
+    src: repoMountSrc,
+    type: "bind",
+  });
+
+  if (!extra?.admin) {
+    for (const readonly of config.readonly) {
+      const src = `${info.path}/${readonly}`;
+      const dst = `/workspace/${info.name}/${readonly}`;
+      if (existsSync(src)) {
+        mounts.push({
+          description: `Read-only overlay for ${readonly}`,
+          dst,
+          mode: "ro",
+          src,
+          type: "bind",
+        });
+      }
+    }
+  }
+
+  return mounts;
 }
 
 export function buildRunCommand(
@@ -129,26 +195,13 @@ export function buildRunCommand(
   if (config.egress_allow_domains.length > 0) {
     args.push("--env", `EXTRA_EGRESS_ALLOW=${config.egress_allow_domains.join(",")}`);
   }
-  if (!extra?.admin) {
-    const sandboxDir = getSandboxDirPath(info.path);
-    args.push("--mount", `type=bind,src=${sandboxDir},dst=/.agent-sandbox,ro`);
-  }
-  const repoShelfVolume = getRepoShelfVolume(info);
-  args.push("--mount", `type=volume,src=${repoShelfVolume},dst=/repo-shelf`);
-  const historyVolume = getHistoryVolume(info);
-  args.push("--mount", `type=volume,src=${historyVolume},dst=/commandhistory`);
-  args.push("--mount", `type=volume,src=${getConfigVolume()},dst=/config`);
-
-  const repoMountSrc = info.path;
-  const repoMountDst = `/workspace/${info.name}`;
-  const repoFlags = extra?.admin ? "" : ",rw";
-  args.push("--mount", `type=bind,src=${repoMountSrc},dst=${repoMountDst}${repoFlags}`);
-
-  if (!extra?.admin) {
-    for (const readonly of config.readonly) {
-      const src = `${info.path}/${readonly}`;
-      const dst = `/workspace/${info.name}/${readonly}`;
-      args.push("--mount", `type=bind,src=${src},dst=${dst},ro`);
+  const mounts = buildMounts(info, config, extra);
+  for (const mount of mounts) {
+    if (mount.type === "bind") {
+      const readonlyFlag = mount.mode === "ro" ? ",readonly=true" : "";
+      args.push("--mount", `type=bind,src=${mount.src},dst=${mount.dst}${readonlyFlag}`);
+    } else if (mount.type === "volume") {
+      args.push("--mount", `type=volume,src=${mount.src},dst=${mount.dst}`);
     }
   }
   for (const port of config.ports) {
@@ -162,7 +215,7 @@ export function buildRunCommand(
   } else {
     args.push(image, "/bin/bash");
   }
-  return { image, args };
+  return { image, args, mounts };
 }
 
 export async function containerRunning(info: RepoInfo): Promise<boolean> {
@@ -217,7 +270,7 @@ export async function showRunCommand(
   options: StartOptions,
 ): Promise<void> {
   const command = buildRunCommand(info, image, config, options, {});
-  const mountSummary = describeMounts(info, command.args);
+  const mountSummary = describeMounts(command.mounts);
   if (mountSummary.length > 0) {
     console.log("Mount summary:");
     for (const entry of mountSummary) {
@@ -229,75 +282,17 @@ export async function showRunCommand(
   console.log(formatDockerCommand(["docker", ...command.args]));
 }
 
-function describeMounts(info: RepoInfo, args: readonly string[]): string[] {
+function describeMounts(mounts: readonly MountSpec[]): string[] {
   const entries: string[] = [];
-  for (let index = 0; index < args.length; index += 1) {
-    if (args[index] !== "--mount") {
-      continue;
-    }
-    const value = args[index + 1];
-    if (!value) {
-      continue;
-    }
-    const mount = parseMountSpec(value);
-    const description = describeMount(info, mount);
+  for (const mount of mounts) {
     const source = mount.type === "volume" ? `volume:${mount.src ?? ""}` : (mount.src ?? "");
     const target = mount.dst ?? "";
     const mode = mount.mode ?? "rw";
     const prettySource = source || "(unspecified)";
     const prettyTarget = target || "(unspecified)";
-    entries.push(`[${mode}] ${prettySource} -> ${prettyTarget} (${description})`);
+    entries.push(`[${mode}] ${prettySource} -> ${prettyTarget} (${mount.description})`);
   }
   return entries;
-}
-
-interface ParsedMount {
-  readonly type?: string;
-  readonly src?: string;
-  readonly dst?: string;
-  readonly mode?: "ro" | "rw";
-}
-
-function parseMountSpec(value: string): ParsedMount {
-  const segments = value.split(",");
-  const data = new Map<string, string>();
-  for (const segment of segments) {
-    const [key, raw] = segment.split("=", 2);
-    if (raw === undefined) {
-      data.set(segment, "");
-      continue;
-    }
-    data.set(key, raw);
-  }
-  const mode = data.has("ro") ? "ro" : "rw";
-  const src = data.get("src") ?? data.get("source");
-  const dst = data.get("dst") ?? data.get("destination") ?? data.get("target");
-  const type = data.get("type");
-  return { type, src, dst, mode } satisfies ParsedMount;
-}
-
-function describeMount(info: RepoInfo, mount: ParsedMount): string {
-  const repoRoot = `/workspace/${info.name}`;
-  if (mount.dst === "/.agent-sandbox") {
-    return "Sandbox configuration overlay";
-  }
-  if (mount.dst === "/repo-shelf") {
-    return "Persistent repo shelf";
-  }
-  if (mount.dst === "/commandhistory") {
-    return "Command history volume";
-  }
-  if (mount.dst === "/config") {
-    return "Firewall configuration volume";
-  }
-  if (mount.dst === repoRoot) {
-    return mount.mode === "ro" ? "Host repository (read-only)" : "Host repository";
-  }
-  if (mount.dst?.startsWith(`${repoRoot}/`)) {
-    const subPath = mount.dst.slice(repoRoot.length + 1);
-    return `Read-only overlay for ${subPath}`;
-  }
-  return "Custom mount";
 }
 
 async function countAllowlistDomains(repoPath: string): Promise<number> {
@@ -316,7 +311,12 @@ async function countAllowlistDomains(repoPath: string): Promise<number> {
 }
 
 export function formatDockerCommand(args: readonly string[]): string {
-  return args.map(quoteArg).join(" ");
+  return (
+    args
+      .map(quoteArg)
+      // .map((a) => (a.startsWith("--") ? ` \\\n  ${a}` : a))
+      .join(" ")
+  );
 }
 
 function quoteArg(arg: string): string {

@@ -40,9 +40,18 @@ export interface RepoInfo {
   readonly hash: string;
 }
 
+export interface MountSpec {
+  readonly type: string;
+  readonly src: string;
+  readonly dst: string;
+  readonly mode: "ro" | "rw";
+  readonly description: string;
+}
+
 export interface RunCommandInfo {
   readonly image: string;
   readonly args: string[];
+  readonly mounts: MountSpec[];
 }
 
 export interface ExecCommandInfo {

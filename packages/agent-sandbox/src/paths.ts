@@ -59,7 +59,7 @@ export function getSandboxDirPath(repoPath: string): string {
 }
 
 function currentDir(): string {
-  return path.dirname(fileURLToPath(new URL(".", import.meta.url)));
+  return path.dirname(fileURLToPath(import.meta.url));
 }
 
 export function getTemplateDir(): string {

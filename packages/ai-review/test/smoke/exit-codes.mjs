@@ -74,7 +74,7 @@ async function git(cwd, ...args) {
     cwd: cwd ?? process.cwd(),
     stdio: ["ignore", "pipe", "pipe"],
   });
-  const [code] = (await once(child, "close")) as [number];
+  const [code] = await once(child, "close");
   const stdout = child.stdout ? await readStream(child.stdout) : "";
   const stderr = child.stderr ? await readStream(child.stderr) : "";
   if ((code ?? 0) !== 0) {
@@ -85,7 +85,7 @@ async function git(cwd, ...args) {
 async function runCli(args, { cwd, env } = {}) {
   const childEnv = { ...process.env, ...env };
   const child = spawn(process.execPath, [cliPath, ...args], { cwd, env: childEnv, stdio: ["ignore", "pipe", "pipe"] });
-  const [code] = (await once(child, "close")) as [number];
+  const [code] = await once(child, "close");
   const stdout = child.stdout ? await readStream(child.stdout) : "";
   const stderr = child.stderr ? await readStream(child.stderr) : "";
   return { exitCode: code ?? 0, stdout, stderr };

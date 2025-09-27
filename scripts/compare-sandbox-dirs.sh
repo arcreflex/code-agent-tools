@@ -46,6 +46,11 @@ done < <(find "$TEMPLATE_DIR" -type f \
 # Detect extras in SANDBOX_DIR that are not part of the template
 while IFS= read -r -d '' sandbox_file; do
   rel="${sandbox_file#$SANDBOX_DIR/}"
+  # Skip marker.txt
+  if [ "$rel" = "marker.txt" ]; then
+    continue
+  fi
+
   tpl_path="$TEMPLATE_DIR/$rel"
   if [ ! -f "$tpl_path" ]; then
     errors+=("Unexpected extra file in sandbox: $rel"$'\n'"  Consider removing it or adding to the template if intended.")
