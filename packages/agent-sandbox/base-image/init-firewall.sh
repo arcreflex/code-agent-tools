@@ -97,9 +97,20 @@ iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 iptables -A INPUT -i lo -j ACCEPT
 iptables -A OUTPUT -o lo -j ACCEPT
 
-# 3) DNS: Docker's embedded resolver typically at 127.0.0.11
-iptables -A OUTPUT -p udp --dport 53 -d 127.0.0.11 -j ACCEPT
-iptables -A OUTPUT -p tcp --dport 53 -d 127.0.0.11 -j ACCEPT
+# 3) DNS: allow resolvers from /etc/resolv.conf (fallback to 127.0.0.11)
+mapfile -t RESOLVERS < <(awk '/^nameserver[[:space:]]+/ {print $2}' /etc/resolv.conf | tr -d '\r')
+if [ "${#RESOLVERS[@]}" -eq 0 ]; then
+    RESOLVERS=(127.0.0.11)
+fi
+for resolver in "${RESOLVERS[@]}"; do
+    if [[ "$resolver" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+        echo "Allowing DNS resolver $resolver"
+        iptables -A OUTPUT -p udp --dport 53 -d "$resolver" -j ACCEPT
+        iptables -A OUTPUT -p tcp --dport 53 -d "$resolver" -j ACCEPT
+    else
+        echo "Skipping non-IPv4 DNS resolver $resolver"
+    fi
+done
 
 # 4) Inbound ports (from .agent-sandbox/config.json: "ports": [<tcp>...])
 if [ -r "$CONFIG_JSON" ]; then
@@ -121,8 +132,11 @@ iptables -A OUTPUT -p tcp -m set --match-set allowed_ips dst --dport 443 -j ACCE
 
 echo "Firewall configuration complete"
 echo "Verifying firewall rules..."
+
 # Negative probe must fail
-if curl -fsS --connect-timeout 5 --max-time 10 https://example.com >/dev/null 2>&1; then
+curl_opts=(--fail --silent --show-error --ipv4 --connect-timeout 5 --max-time 10)
+
+if curl "${curl_opts[@]}" https://example.com >/dev/null; then
     echo "ERROR: Firewall verification failed - unexpected access to https://example.com"
     exit 1
 fi
@@ -130,9 +144,9 @@ echo "Negative probe passed (blocked example.com)."
 
 # Positive probes (GitHub + primary providers)
 probe_ok=1
-curl -fsS --connect-timeout 5 --max-time 10 https://api.github.com/zen >/dev/null 2>&1 || probe_ok=0
+curl "${curl_opts[@]}" https://api.github.com/zen >/dev/null || probe_ok=0
 for d in "${DOMAINS[@]}"; do
-    if ! curl -fsS --connect-timeout 5 --max-time 10 "https://${d}" >/dev/null 2>&1; then
+    if ! curl "${curl_opts[@]}" "https://${d}" >/dev/null; then
         echo "WARN: Probe failed for https://${d}"
         probe_ok=0
     fi

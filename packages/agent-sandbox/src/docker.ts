@@ -81,7 +81,7 @@ export async function startContainer(
     admin: extra?.admin,
   });
   await ensureContainerStopped(info);
-  await ensureVolumes(info);
+  await ensureVolumes(info, image);
   await $`docker ${run.args}`;
   await delay(500);
   if (!(await containerRunning(info))) {
@@ -191,7 +191,6 @@ export function buildRunCommand(
   args.push("--env", "CONFIG_VOLUME=/config");
   args.push("--cap-add", "NET_ADMIN");
   args.push("--cap-add", "NET_RAW");
-  args.push("--security-opt", "no-new-privileges");
   if (config.egress_allow_domains.length > 0) {
     args.push("--env", `EXTRA_EGRESS_ALLOW=${config.egress_allow_domains.join(",")}`);
   }
@@ -226,7 +225,7 @@ export async function containerRunning(info: RepoInfo): Promise<boolean> {
 
 export async function execInContainer(info: RepoInfo, command: string): Promise<void> {
   const name = getContainerName(info);
-  await $`docker exec ${name} bash -lc ${command}`;
+  await $({ stdio: "inherit" })`docker exec ${name} bash -lc ${command}`;
 }
 
 export async function openShell(info: RepoInfo, branch: string | undefined, asRoot: boolean): Promise<number> {
@@ -359,9 +358,21 @@ export async function listSharedVolumes(): Promise<void> {
   console.log(result.stdout.trim());
 }
 
-async function ensureVolumes(info: RepoInfo): Promise<void> {
+async function ensureVolumes(info: RepoInfo, image: string): Promise<void> {
   const volumes = [getRepoShelfVolume(info), getHistoryVolume(info), getConfigVolume()];
   for (const volume of volumes) {
     await $`docker volume create ${volume}`;
+    await ensureVolumeOwnership(volume, image);
+  }
+}
+
+async function ensureVolumeOwnership(volume: string, image: string): Promise<void> {
+  try {
+    const chownScript = "chown -R node:node /volume || chown -R 1000:1000 /volume";
+    await $`docker run --rm --user root --entrypoint /bin/sh --mount type=volume,src=${volume},dst=/volume ${image} -c ${chownScript}`;
+  } catch (error) {
+    throw new Error(
+      `Failed to set ownership for volume ${volume}: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
 }

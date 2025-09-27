@@ -73,7 +73,7 @@ export function getBaseImageDir(): string {
 export async function loadSandboxConfig(repoPath: string): Promise<SandboxConfig> {
   const repoConfigPath = path.join(getSandboxDirPath(repoPath), "config.json");
   const homeConfigPath = path.join(homedir(), ".agent-sandbox", "config.json");
-  const baseConfig: SandboxConfig = {
+  const baseConfig: Partial<SandboxConfig> = {
     ports: [],
     readonly: [".git/hooks", ".husky", ".agent-sandbox", ".ai-review/user-context.json"],
     egress_allow_domains: [],
