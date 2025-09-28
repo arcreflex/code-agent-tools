@@ -134,15 +134,14 @@ echo "Firewall configuration complete"
 echo "Verifying firewall rules..."
 
 # Negative probe must fail
-curl_opts=(--fail --silent --show-error --ipv4 --connect-timeout 5 --max-time 10)
-
-if curl "${curl_opts[@]}" https://example.com >/dev/null; then
+if curl --fail --silent --show-error --ipv4 --connect-timeout 5 --max-time 10 https://example.com >/dev/null; then
     echo "ERROR: Firewall verification failed - unexpected access to https://example.com"
     exit 1
 fi
 echo "Negative probe passed (blocked example.com)."
 
 # Positive probes (GitHub + primary providers)
+curl_opts=(--silent --show-error --ipv4 --connect-timeout 5 --max-time 10)
 probe_ok=1
 curl "${curl_opts[@]}" https://api.github.com/zen >/dev/null || probe_ok=0
 for d in "${DOMAINS[@]}"; do
