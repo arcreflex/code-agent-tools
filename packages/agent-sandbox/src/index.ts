@@ -28,6 +28,7 @@ import { ensureRepoProvisioned } from "./provision.ts";
 import { getContainerName, loadRepoAndConfigInfo, loadSandboxConfig, resolveRepoPath } from "./paths.ts";
 import { initCodexConfig } from "./codex.ts";
 import type { BuildBaseOptions, BuildOptions, ExecOptions, RepoInfo, ShellOptions, StartOptions } from "./types.ts";
+import { $ } from "zx";
 
 const program = new Command();
 program.name("agent-sandbox").description("Docker-based sandbox manager for coding agents");
@@ -107,10 +108,24 @@ program
   .option("--branch <branch>", "Worktree branch to provision")
   .option("--base-tag <tag>", "Base image tag to use", "latest")
   .option("--build", "Build the per-repo image before starting", false)
-  .action(async (pathArg: string | undefined, options: ShellOptions) => {
-    const exitCode = await handleShellCommand(pathArg, { ...options, admin: false, asRoot: false });
-    process.exitCode = exitCode;
-  });
+  .action(
+    async (
+      pathArg: string | undefined,
+      options: {
+        branch?: string;
+        baseTag: string;
+        build?: boolean;
+      },
+    ) => {
+      const exitCode = await handleShellCommand(pathArg, {
+        ...options,
+        repoPath: pathArg,
+        admin: false,
+        asRoot: false,
+      });
+      process.exitCode = exitCode;
+    },
+  );
 
 program
   .command("admin [path]")
@@ -119,13 +134,10 @@ program
   .option("--base-tag <tag>", "Base image tag to use", "latest")
   .option("--build", "Build the per-repo image before starting", false)
   .action(async (pathArg: string | undefined, options: { root?: boolean; baseTag: string; build?: boolean }) => {
-    const exitCode = await handleShellCommand(pathArg, {
-      branch: undefined,
-      baseTag: options.baseTag,
-      build: options.build,
+    const exitCode = await runAdminShell(pathArg, {
+      ...options,
+      asRoot: !!options.root,
       admin: true,
-      asRoot: Boolean(options.root),
-      repoPath: await resolveRepoPath(pathArg),
     });
     process.exitCode = exitCode;
   });
@@ -205,22 +217,23 @@ async function handleShellCommand(pathArg: string | undefined, options: ShellOpt
   const info = await loadRepoAndConfigInfo(repoPath);
   const config = await loadSandboxConfig(info);
   const image = await resolveImage(info, options);
-  if (options.admin) {
-    return runAdminShell(info, image, config, options);
-  }
   if (!(await containerRunning(info))) {
     await startContainer(info, image, config, options);
   }
   await ensureRepoProvisioned(repoPath, options.branch);
-  return openShell(info, options.branch, options.asRoot);
+  const branch =
+    options.branch ??
+    // default to current branch
+    (await $`git -C ${repoPath} rev-parse --abbrev-ref HEAD`.text()).trim();
+  console.log(`Opening shell in sandbox for branch ${branch}...`);
+  return openShell(info, branch);
 }
 
-function runAdminShell(
-  info: RepoInfo,
-  image: string,
-  config: Awaited<ReturnType<typeof loadSandboxConfig>>,
-  options: ShellOptions,
-): Promise<number> {
+async function runAdminShell(pathArg: string | undefined, options: ShellOptions): Promise<number> {
+  const repoPath = options.repoPath ?? (await resolveRepoPath(pathArg));
+  const info = await loadRepoAndConfigInfo(repoPath);
+  const config = await loadSandboxConfig(info);
+  const image = await resolveImage(info, options);
   const run = buildRunCommand(info, image, config, options, {
     admin: true,
     root: options.asRoot,

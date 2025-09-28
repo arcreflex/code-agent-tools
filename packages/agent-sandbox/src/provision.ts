@@ -20,6 +20,7 @@ async function detectDefaultBranch(info: RepoInfo): Promise<string> {
 }
 
 async function provisionRepo(info: RepoInfo, branch: string): Promise<void> {
+  console.log(`Provisioning repository ${info.name} on branch ${branch}...`);
   const sanitized = sanitizeBranchName(branch);
   const script = `
 set -euo pipefail
@@ -43,7 +44,7 @@ if ! git -C "$SHELF_REPO" show-ref --verify --quiet "refs/heads/${branch}"; then
 fi
 
 mkdir -p "$(dirname "$WORKTREE_PATH")"
-if [ ! -d "$WORKTREE_PATH/.git" ]; then
+if [ ! -d "$WORKTREE_PATH" ]; then
   git -C "$SHELF_REPO" worktree add "$WORKTREE_PATH" "${branch}"
 fi
 

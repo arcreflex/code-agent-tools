@@ -179,9 +179,7 @@ export function buildRunCommand(
   } else {
     args.push("-it");
   }
-  if (!extra?.detached) {
-    args.push("--rm");
-  }
+  args.push("--rm");
   const containerName = getContainerName(info);
   if (extra?.detached) {
     args.push("--name", containerName);
@@ -231,14 +229,11 @@ export async function execInContainer(info: RepoInfo, command: string): Promise<
   await $({ stdio: "inherit" })`docker exec ${name} bash -lc ${command}`;
 }
 
-export async function openShell(info: RepoInfo, branch: string | undefined, asRoot: boolean): Promise<number> {
+export async function openShell(info: RepoInfo, branch: string): Promise<number> {
   const args = ["exec", "-it"];
-  if (asRoot) {
-    args.push("--user", "root");
-  }
-  args.push(getContainerName(info));
   const workdir = branch ? getWorktreePath(branch) : `/workspace/${info.name}`;
   args.push("--workdir", workdir);
+  args.push(getContainerName(info));
   args.push("bash");
   return runDockerCommand(args);
 }
