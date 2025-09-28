@@ -188,7 +188,6 @@ export function buildRunCommand(
   args.push("--label", `repo-path=${info.repoPath}`);
   args.push("--label", `repo-name=${info.name}`);
   args.push("--env", `REPO_NAME=${info.name}`);
-  args.push("--env", `SANDBOX_REPO_PATH=${info.repoPath}`);
   args.push("--env", "CONFIG_VOLUME=/config");
   args.push("--cap-add", "NET_ADMIN");
   args.push("--cap-add", "NET_RAW");
