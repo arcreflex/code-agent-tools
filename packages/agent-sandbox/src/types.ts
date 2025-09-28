@@ -39,6 +39,8 @@ export interface RepoInfo {
   readonly repoPath: string;
   /** Either the ${repoPath}/.agent-sandbox/config.json or ${home}/.agent-sandbox/config.json */
   readonly configPath: string;
+  /** Resolved path for the sandbox agent instructions template, if present. */
+  readonly agentsTemplatePath?: string;
   readonly image:
     | {
         type: "base";

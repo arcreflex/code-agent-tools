@@ -157,7 +157,7 @@ model = "gpt-5-codex"
 reasoning_effort = "high"
 ```
 
-Initial `CONFIG_VOLUME/.codex/AGENTS.md` content set by this command: see `codex-agent-instructions.md`. Purpose:
+Initial `CONFIG_VOLUME/.codex/AGENTS.md` content set by this command: see `.agent-sandbox/AGENTS.template.md`. Purpose:
 
 - to let the AI agent know that it's working in a containerized sandbox environment designed to safely allow lots of autonomy.
 - and to document nonstandard tools that are available in the base image (e.g., ast-grep)

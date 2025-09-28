@@ -27,7 +27,3 @@ The monorepo uses npm workspaces with two packages under `packages/`:
 - **Preinstalled CLIs**: Claude Code, OpenAI Codex, and ast-grep; configs persist via named volumes
 - **Firewall**: fail-closed egress using filter table only; SSH restricted to GitHub; HTTPS restricted to allowlisted domains; inbound closed unless declared
 - **Node base**: Node 24 (bookworm-slim)
-
-### Template Integrity
-
-`scripts/compare-sandbox-dirs.sh` verifies that `.agent-sandbox` matches the template via SHA-256 checksums during lint-staged.

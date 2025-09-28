@@ -199,12 +199,13 @@ program
   });
 
 program
-  .command("codex-init-config")
+  .command("codex-init-config [path]")
   .description("Initialize the shared Codex configuration volume")
   .option("--auth", "Copy host auth.json into the volume", false)
   .option("--force", "Overwrite existing configuration files", false)
-  .action(async (options: { auth?: boolean; force?: boolean }) => {
-    await initCodexConfig({ auth: options.auth, force: options.force });
+  .action(async (pathArg: string | undefined, options: { auth?: boolean; force?: boolean }) => {
+    const repoPath = await resolveRepoPath(pathArg);
+    await initCodexConfig({ auth: options.auth, force: options.force, repoPath });
   });
 
 program.parseAsync(process.argv).catch((error) => {

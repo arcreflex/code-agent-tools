@@ -43,6 +43,19 @@ export async function loadRepoAndConfigInfo(repoPath: string): Promise<RepoInfo>
     throw new Error(`Could not find config file in ${repoPath} or home directory`);
   }
 
+  let agentsTemplatePath: string | undefined;
+  const candidates = [path.join(homedir(), ".agent-sandbox"), currentDir()];
+  for (const dir of candidates) {
+    try {
+      const candidate = path.join(dir, "AGENTS.template.md");
+      await fs.access(candidate);
+      agentsTemplatePath = candidate;
+      break;
+    } catch {
+      // pass
+    }
+  }
+
   let image: RepoInfo["image"] = { type: "base" as const };
   try {
     const dockerFilePath = path.join(repoPath, ".agent-sandbox/Dockerfile");
@@ -61,6 +74,7 @@ export async function loadRepoAndConfigInfo(repoPath: string): Promise<RepoInfo>
     repoPath,
     hash,
     configPath,
+    agentsTemplatePath,
     image,
   };
 }

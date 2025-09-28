@@ -1,34 +1,37 @@
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { $ } from "zx";
 
-import { getConfigVolume } from "./paths.ts";
+import { getConfigVolume, loadRepoAndConfigInfo } from "./paths.ts";
 
 $.verbose = false;
 
 export interface CodexInitOptions {
   readonly force?: boolean;
   readonly auth?: boolean;
+  readonly repoPath: string;
 }
 
-export async function initCodexConfig(options: CodexInitOptions = {}): Promise<void> {
+export async function initCodexConfig(options: CodexInitOptions): Promise<void> {
   const volume = getConfigVolume();
-  await $`docker volume create ${volume}`;
 
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-init-"));
   try {
     const instructionsSource = path.join(tempDir, "instructions.md");
-    const instructionsContent = await loadInstructions();
-    await fs.writeFile(instructionsSource, instructionsContent, "utf8");
+    const instructionsContent = await loadInstructions(options.repoPath);
+    if (instructionsContent) {
+      await fs.writeFile(instructionsSource, instructionsContent, "utf8");
+    }
 
     const authSource = await prepareAuthFile(options.auth === true);
 
     const args = [
       "run",
       "--rm",
+      "--user",
+      "node",
       "--env",
       `FORCE=${options.force ? "1" : "0"}`,
       "--env",
@@ -46,18 +49,16 @@ export async function initCodexConfig(options: CodexInitOptions = {}): Promise<v
     args.push("node:24-bookworm-slim");
     args.push("bash", "-lc", buildCodexScript());
 
-    await $`docker ${args}`;
+    await $({ stdio: "inherit" })`docker ${args}`;
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
 }
 
-async function loadInstructions(): Promise<string> {
-  const instructionsPath = path.resolve(
-    path.dirname(fileURLToPath(new URL(".", import.meta.url))),
-    "../codex-agent-instructions.md",
-  );
-  return fs.readFile(instructionsPath, "utf8");
+async function loadInstructions(repoPath: string): Promise<string | undefined> {
+  const info = await loadRepoAndConfigInfo(repoPath);
+  if (!info.agentsTemplatePath) return undefined;
+  return fs.readFile(info.agentsTemplatePath, "utf8");
 }
 
 async function prepareAuthFile(requestAuth: boolean): Promise<string | undefined> {
