@@ -38,14 +38,23 @@ git -C "$SHELF_REPO" remote get-url host >/dev/null 2>&1 || git -C "$SHELF_REPO"
 git -C "$SHELF_REPO" remote set-url host "file://$HOST_REPO"
 git -C "$SHELF_REPO" fetch host --prune
 
-if ! git -C "$SHELF_REPO" show-ref --verify --quiet "refs/heads/${branch}"; then
-  DEFAULT_BRANCH=$(git -C "$SHELF_REPO" symbolic-ref --short HEAD || echo main)
-  git -C "$SHELF_REPO" checkout -B "${branch}" "host/${branch}" || git -C "$SHELF_REPO" checkout -B "${branch}" "$DEFAULT_BRANCH"
+if git -C "$SHELF_REPO" show-ref --verify --quiet "refs/remotes/host/main"; then
+  if git -C "$SHELF_REPO" show-ref --verify --quiet "refs/heads/main"; then
+    git -C "$SHELF_REPO" checkout main
+  else
+    git -C "$SHELF_REPO" checkout -B main "host/main"
+  fi
+  git -C "$SHELF_REPO" reset --hard "host/main"
 fi
 
 mkdir -p "$(dirname "$WORKTREE_PATH")"
 if [ ! -d "$WORKTREE_PATH" ]; then
-  git -C "$SHELF_REPO" worktree add "$WORKTREE_PATH" "${branch}"
+  if git -C "$SHELF_REPO" show-ref --verify --quiet "refs/heads/${branch}" || \
+     git -C "$SHELF_REPO" show-ref --verify --quiet "refs/remotes/host/${branch}"; then
+    git -C "$SHELF_REPO" worktree add "$WORKTREE_PATH" "${branch}"
+  else
+    git -C "$SHELF_REPO" worktree add -b "${branch}" "$WORKTREE_PATH"
+  fi
 fi
 
 git -C "$WORKTREE_PATH" remote get-url host >/dev/null 2>&1 || git -C "$WORKTREE_PATH" remote add host "file://$HOST_REPO"
