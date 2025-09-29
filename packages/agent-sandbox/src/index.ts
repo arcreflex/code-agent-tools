@@ -131,16 +131,24 @@ program
   .command("admin [path]")
   .description("Open an admin shell with relaxed guardrails")
   .option("--root", "Run the shell as root", false)
+  .option("--firewall", "Use the sandbox firewall", true)
+  .option("--no-firewall", "Disable the sandbox firewall")
   .option("--base-tag <tag>", "Base image tag to use", "latest")
   .option("--build", "Build the per-repo image before starting", false)
-  .action(async (pathArg: string | undefined, options: { root?: boolean; baseTag: string; build?: boolean }) => {
-    const exitCode = await runAdminShell(pathArg, {
-      ...options,
-      asRoot: !!options.root,
-      admin: true,
-    });
-    process.exitCode = exitCode;
-  });
+  .action(
+    async (
+      pathArg: string | undefined,
+      options: { root?: boolean; baseTag: string; build?: boolean; firewall?: boolean },
+    ) => {
+      const exitCode = await runAdminShell(pathArg, {
+        ...options,
+        asRoot: !!options.root,
+        admin: true,
+        skipFirewall: !options.firewall,
+      });
+      process.exitCode = exitCode;
+    },
+  );
 
 program
   .command("exec [path]")
@@ -230,7 +238,10 @@ async function handleShellCommand(pathArg: string | undefined, options: ShellOpt
   return openShell(info, branch);
 }
 
-async function runAdminShell(pathArg: string | undefined, options: ShellOptions): Promise<number> {
+async function runAdminShell(
+  pathArg: string | undefined,
+  options: ShellOptions & { skipFirewall: boolean },
+): Promise<number> {
   const repoPath = options.repoPath ?? (await resolveRepoPath(pathArg));
   const info = await loadRepoAndConfigInfo(repoPath);
   const config = await loadSandboxConfig(info);
@@ -238,6 +249,7 @@ async function runAdminShell(pathArg: string | undefined, options: ShellOptions)
   const run = buildRunCommand(info, image, config, options, {
     admin: true,
     root: options.asRoot,
+    skipFirewall: options.skipFirewall,
   });
   return new Promise<number>((resolve) => {
     const child = spawn("docker", run.args, { stdio: "inherit" });

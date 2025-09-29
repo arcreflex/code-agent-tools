@@ -171,7 +171,7 @@ export function buildRunCommand(
   image: string,
   config: SandboxConfig,
   options: StartOptions,
-  extra?: { detached?: boolean; admin?: boolean; root?: boolean },
+  extra?: { detached?: boolean; admin?: boolean; root?: boolean; skipFirewall?: boolean },
 ): RunCommandInfo {
   const args: string[] = ["run"];
   if (extra?.detached) {
@@ -209,6 +209,9 @@ export function buildRunCommand(
   }
   if (extra?.root) {
     args.push("--user", "root");
+  }
+  if (extra?.skipFirewall) {
+    args.push("--env", "SKIP_FIREWALL=1");
   }
   if (extra?.detached) {
     args.push(image, "tail", "-f", "/dev/null");
