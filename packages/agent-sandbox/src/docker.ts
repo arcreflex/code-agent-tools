@@ -190,6 +190,7 @@ export function buildRunCommand(
   args.push("--env", `REPO_NAME=${info.name}`);
   args.push("--env", "CONFIG_VOLUME=/config");
   args.push("--env", "CODEX_HOME=/config/.codex");
+  args.push("--ipc=host"); // https://playwright.dev/docs/docker#recommended-docker-configuration
   args.push("--cap-add", "NET_ADMIN");
   args.push("--cap-add", "NET_RAW");
   if (config.egress_allow_domains.length > 0) {
