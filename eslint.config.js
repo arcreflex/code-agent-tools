@@ -25,4 +25,13 @@ export default [
       "@typescript-eslint/no-unused-vars": "error",
     },
   },
+  {
+    files: ["**/*.mjs"],
+    languageOptions: {
+      parser: tsParser,
+      globals: {
+        ...globals.node,
+      },
+    },
+  },
 ];

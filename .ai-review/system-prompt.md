@@ -47,3 +47,13 @@ You are reviewing code that was written by an AI coding agent. While extremely c
 - **SUGGESTION**: style/nice-to-have.
 
 Explicit deferrals (`// DEFERRED: …`, `throw new Error("UNIMPLEMENTED: …")`) are acceptable if rationale is clear, tracked, and backed by project/owner context.
+
+## Output format (required)
+
+At the end of your review, you must call the provided tool/function `finalize_review` with:
+- `status`: `"pass"` or `"block"` (must be `"block"` if any blockers are present)
+- `blockers`: array of `{ rule, title, file, line_start, line_end, why, suggested_fix? }`
+- `notes`: array of non-blocking notes
+
+If you do not call this tool, the review will be treated as an error.
+

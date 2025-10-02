@@ -1,8 +1,8 @@
 # AI Development Guardrails
 
-Tools that prevent AI agents from bypassing development quality controls. Blocks shortcuts like `--no-verify` and protects critical workflow infrastructure.
+Tools that prevent AI agents from bypassing development quality controls. Blocks shortcuts like `--no-verify` and protects critical workflow infrastructure. **Default stance: fail-closed.**
 
-AI agents often take shortcuts that skip code review, bypass pre-commit hooks, or modify development infrastructure. These tools enforce proper development practices by blocking problematic commands and protecting key directories.
+AI agents sometimes skip code review, bypass pre-commit hooks, or modify development infrastructure. These tools enforce proper development practices by blocking problematic commands and protecting key directories.
 
 ## Installation
 
@@ -22,14 +22,31 @@ npm run build
 
 ### [agent-sandbox](./packages/agent-sandbox/)
 
-Containerized development environments with built-in guardrails. See [detailed specification](specs/agent-sandbox.md).
+Containerized development environments with built-in guardrails. See the [detailed specification](specs/agent-sandbox.md).
 
-**Branch-aware mode (dual mount):** sandboxes mount both the host repo and a shared “repo-shelf” volume. Use `--branch <name>` to work in `/repo-shelf/worktrees/<branch>`. Push back to the host with `git push host <branch>`. Default bind mode still works and can `cd` into any worktree.
+Each workspace runs a single container that mounts the host checkout at `/workspace/<repo>` and a shared **repo-shelf** volume. `--branch <name>` (default: the current host branch) provisions `/repo-shelf/worktrees/<branchSan>`. `agent-sandbox shell` launches directly in that path via `docker exec -w`. Sandbox branches track `host/<branch>` so `git push` works without extra flags.
+
+**Firewall / networking (summary)**
+
+- **Fail-closed**: if guardrails cannot be applied/verified, sandbox exits non-zero
+- **Egress**: DNS (UDP+TCP 53 to Docker DNS), SSH only to GitHub, HTTPS only to allowlisted domains (OpenAI, Anthropic, OpenRouter, npm plus repo-specific extras)
+- **Inbound**: closed by default; only ports listed in `.agent-sandbox/config.json#ports` are opened
+- No NAT manipulation; only filter-table rules. Requires `--cap-add=NET_ADMIN,NET_RAW`.
+
+**Base image**
+
+- Based on Node 24 (bookworm-slim) with core CLIs preinstalled. Global tool installs are tolerant (warn if missing on the current arch).
 
 ### [ai-review](./packages/ai-review/)
 
-LLM-based code review CLI for staged changes, revision ranges, and pre-receive hooks. See [detailed specification](specs/ai-review.md).
-(Inspired by https://gist.github.com/huntcsg/c4fe3acf4f7d2fe1ca16e5518a27a23e via https://x.com/xlatentspace)
+LLM-based code review CLI for staged changes, revision ranges, and pre-receive hooks. See the [detailed specification](specs/ai-review.md).
+
+**Behavioral guarantees**
+
+- Returns a deterministic pass/block via a required structured tool/function call
+- Hard-fails pre-flight if likely secrets are detected (no API call); can be overridden with `--dangerously-allow-secrets` (content still redacted)
+- `--dry-run` (size/scan preview, no network) and `--preview` (show exact request payload/messages)
+- Not wired to precommit by default; when enabled, failures are fail-closed by default.
 
 ## Development
 

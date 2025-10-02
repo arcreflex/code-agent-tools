@@ -1,936 +1,334 @@
-import path from "node:path";
-import { parseArgs, type ParseArgsOptionsConfig } from "util";
-import { $, chalk } from "zx";
-import fs from "node:fs";
-import os from "node:os";
-import crypto from "node:crypto";
+#!/usr/bin/env node
 
-interface SandboxConfig {
-  ports?: string[];
-  readonly?: string[];
-}
+import { spawn } from "node:child_process";
+import process from "node:process";
 
-const __dirname = new URL(".", import.meta.url).pathname;
-const configVolume = "agent-sandbox-claude-code-config";
-const codexConfigVolume = "agent-sandbox-codex-config";
+import { Command } from "commander";
 
-type OptionSpec = {
-  type: "string" | "boolean";
-  default?: string | boolean | string[] | boolean[];
-  desc: string;
-  short?: string;
+import {
+  buildBaseImage,
+  buildExecCommand,
+  buildRepoImage,
+  containerRunning,
+  ensureContainerStopped,
+  listContainers,
+  listSharedVolumes,
+  listVolumes,
+  openShell,
+  formatDockerCommand,
+  showRunCommand,
+  startContainer,
+  buildRunCommand,
+  runDockerCommand,
+  imageExists,
+  BASE_IMAGE_NAME,
+} from "./docker.ts";
+import { initializeSandboxConfig } from "./fs.ts";
+import { ensureRepoProvisioned } from "./provision.ts";
+import { getContainerName, loadRepoAndConfigInfo, loadSandboxConfig, resolveRepoPath } from "./paths.ts";
+import { initCodexConfig } from "./codex.ts";
+import type { BuildBaseOptions, BuildOptions, ExecOptions, RepoInfo, ShellOptions, StartOptions } from "./types.ts";
+import { $ } from "zx";
+
+const program = new Command();
+program.name("agent-sandbox").description("Docker-based sandbox manager for coding agents");
+
+const collectEnv = (value: string, previous: string[]) => {
+  previous.push(value);
+  return previous;
 };
 
-type CommandSpec<V> = {
-  summary: string;
-  usage?: string[];
-  run: (ctx: { args: { positionals: string[]; values: V } }) => Promise<void> | void;
-};
-
-type SandboxValues = {
-  force: boolean;
-  auth: boolean;
-  branch?: string;
-  "base-tag": string;
-  build?: boolean;
-  tag: string;
-  "claude-code-version": string;
-  "codex-version": string;
-  "git-delta-version": string;
-  "ast-grep-version": string;
-  root: boolean;
-  help: boolean;
-};
-
-const CLI_OPTIONS: Record<string, OptionSpec> = {
-  force: { type: "boolean", default: false, desc: "Force overwrite existing config" },
-  auth: { type: "boolean", default: false, desc: "Initialize auth (Codex) when creating config" },
-  branch: { type: "string", desc: "Git branch to target for container name" },
-  "base-tag": { type: "string", default: "latest", desc: "Base image tag to use" },
-  build: { type: "boolean", desc: "Build images before running" },
-  tag: { type: "string", default: "latest", desc: "Tag for base images (build-base)" },
-  "claude-code-version": { type: "string", default: "latest", desc: "Version of @anthropic-ai/claude-code" },
-  "codex-version": { type: "string", default: "latest", desc: "Version of codex-cli to install" },
-  "git-delta-version": { type: "string", default: "0.18.2", desc: "Version of git-delta to install" },
-  "ast-grep-version": { type: "string", default: "latest", desc: "Version of ast-grep to install" },
-  root: { type: "boolean", default: false, desc: "Run admin command as root" },
-  help: { type: "boolean", default: false, desc: "Show help", short: "h" },
-};
-
-const COMMANDS: Record<string, CommandSpec<SandboxValues>> = {
-  "build-base": {
-    summary: "Build base Docker image used by sandboxes",
-    usage: [
-      "agent-sandbox build-base [--tag <tag>] [--claude-code-version <ver>] [--codex-version <ver>] [--git-delta-version <ver>] [--ast-grep-version <ver>]",
-    ],
-    run: async ({ args }) => {
-      await buildBase({
-        tag: args.values.tag,
-        claudeCodeVersion: args.values["claude-code-version"],
-        codexVersion: args.values["codex-version"],
-        gitDeltaVersion: args.values["git-delta-version"],
-        astGrepVersion: args.values["ast-grep-version"],
-      });
-    },
-  },
-  build: {
-    summary: "Build a sandbox image for current workspace",
-    usage: ["agent-sandbox build [<path>] [--base-tag <tag>]"],
-    run: async ({ args }) => {
-      const localWorkspaceFolder = args.positionals[1] || process.cwd();
-      await build({ localWorkspaceFolder, baseTag: args.values["base-tag"] });
-    },
-  },
-  init: {
-    summary: "Initialize sandbox config in workspace",
-    usage: ["agent-sandbox init [<path>] [--force]"],
-    run: async ({ args }) => {
-      const localWorkspaceFolder = args.positionals[1] || process.cwd();
-      await init({ localWorkspaceFolder, force: !!args.values.force });
-    },
-  },
-  volume: {
-    summary: "Print the name of the Docker volume used for config",
-    usage: ["agent-sandbox volume"],
-    run: async () => {
-      console.log(configVolume);
-    },
-  },
-  restart: {
-    summary: "Restart the sandbox container",
-    usage: ["agent-sandbox restart [<path>] [--build] [--branch <name>] [--base-tag <tag>]"],
-    run: async ({ args }) => {
-      const localWorkspaceFolder = args.positionals[1] || process.cwd();
-      await start({
-        localWorkspaceFolder,
-        restart: true,
-        build: !!args.values.build,
-        branch: args.values.branch,
-        baseTag: args.values["base-tag"],
-      });
-    },
-  },
-  start: {
-    summary: "Start the sandbox container",
-    usage: ["agent-sandbox start [<path>] [--build] [--branch <name>] [--base-tag <tag>]"],
-    run: async ({ args }) => {
-      const localWorkspaceFolder = args.positionals[1] || process.cwd();
-      await start({
-        localWorkspaceFolder,
-        restart: false,
-        build: !!args.values.build,
-        branch: args.values.branch,
-        baseTag: args.values["base-tag"],
-      });
-    },
-  },
-  stop: {
-    summary: "Stop the sandbox container",
-    usage: ["agent-sandbox stop [<path>] [--branch <name>]"],
-    run: async ({ args }) => {
-      const localWorkspaceFolder = args.positionals[1] || process.cwd();
-      await stop({ localWorkspaceFolder, branch: args.values.branch });
-    },
-  },
-  shell: {
-    summary: "Open a shell in the sandbox (default)",
-    usage: ["agent-sandbox shell [<path>] [--build] [--branch <name>] [--base-tag <tag>]"],
-    run: async ({ args }) => {
-      const localWorkspaceFolder = args.positionals[1] || process.cwd();
-      await shell({
-        localWorkspaceFolder,
-        restart: !!args.values.build,
-        build: !!args.values.build,
-        branch: args.values.branch,
-        baseTag: args.values["base-tag"],
-      });
-    },
-  },
-  "show-run": {
-    summary: "Show the docker run command that would be used",
-    usage: ["agent-sandbox show-run [<path>] [--branch <name>] [--base-tag <tag>]"],
-    run: async ({ args }) => {
-      const localWorkspaceFolder = args.positionals[1] || process.cwd();
-      await showRun({
-        localWorkspaceFolder,
-        branch: args.values.branch,
-        baseTag: args.values["base-tag"],
-      });
-    },
-  },
-  checkout: {
-    summary: "Create a sandbox worktree for a branch",
-    usage: ["agent-sandbox checkout <branch> [--base-tag <tag>]"],
-    run: async ({ args }) => {
-      const branch = args.positionals[1];
-      if (!branch) {
-        console.error("Usage: agent-sandbox checkout <branch> [--base-tag <tag>]");
-        process.exit(1);
-      }
-      const localWorkspaceFolder = process.cwd();
-      await ensureShelfAndWorktree({
-        localWorkspaceFolder,
-        branch,
-        baseTag: args.values["base-tag"],
-      });
-      console.log(chalk.green(`Provisioned worktree for '${branch}'.`));
-    },
-  },
-  list: {
-    summary: "List running agent-sandbox containers",
-    usage: ["agent-sandbox list"],
-    run: async () => {
-      await listContainers();
-    },
-  },
-  admin: {
-    summary: "Open admin shell in sandbox",
-    usage: ["agent-sandbox admin [<path>] [--root] [--build]"],
-    run: async ({ args }) => {
-      const localWorkspaceFolder = args.positionals[1] || process.cwd();
-      await admin({
-        localWorkspaceFolder,
-        root: !!args.values.root,
-        build: !!args.values.build,
-      });
-    },
-  },
-  "codex-init-config": {
-    summary: "Initialize Codex config in shared volume",
-    usage: ["agent-sandbox codex-init-config [--auth] [--force]"],
-    run: async ({ args }) => {
-      await codexInitConfig({ auth: !!args.values.auth, force: !!args.values.force });
-    },
-  },
-  "codex-logout": {
-    summary: "Remove Codex auth from shared volume",
-    usage: ["agent-sandbox codex-logout"],
-    run: async () => {
-      await codexLogout();
-    },
-  },
-};
-
-function toParseArgsOptions(options: Record<string, OptionSpec>): ParseArgsOptionsConfig {
-  type ArgOpt = {
-    type: "string" | "boolean";
-    short?: string;
-    default?: string | boolean | string[] | boolean[];
-  };
-  const out: Partial<ParseArgsOptionsConfig> = {};
-  for (const [k, v] of Object.entries(options)) {
-    const conf: ArgOpt = { type: v.type };
-    if (v.short !== undefined) conf.short = v.short;
-    if (v.default !== undefined) conf.default = v.default;
-    out[k] = conf as unknown as ParseArgsOptionsConfig[string];
-  }
-  return out as ParseArgsOptionsConfig;
-}
-
-function printHelp(command?: string) {
-  const header = "agent-sandbox";
-  if (!command) {
-    console.log(`${header} - Containerized sandbox for coding agents`);
-    console.log("");
-    console.log("Usage: agent-sandbox [command] [options]");
-    console.log("");
-    console.log("Commands:");
-    const entries = Object.entries(COMMANDS);
-    const namePad = Math.max(...entries.map(([n]) => n.length));
-    for (const [name, c] of entries) {
-      console.log(`  ${name.padEnd(namePad)}  ${c.summary}`);
-    }
-    console.log("  help            Show help (also -h, --help)");
-    console.log("");
-    console.log("Options:");
-    for (const [name, spec] of Object.entries(CLI_OPTIONS)) {
-      const flags = [spec.short ? `-${spec.short}` : null, `--${name}`].filter(Boolean).join(", ");
-      console.log(`  ${flags.padEnd(22)} ${spec.desc}`);
-    }
-    console.log("");
-    console.log("Default command: shell");
-  } else {
-    const c = COMMANDS[command];
-    if (!c) {
-      console.error(chalk.red(`Unknown command: ${command}`));
-      console.log("Use --help to see available commands.");
-      process.exit(2);
-    }
-    console.log(`${header} ${command} - ${c.summary}`);
-    console.log("");
-    if (c.usage && c.usage.length) {
-      console.log("Usage:");
-      for (const u of c.usage) console.log(`  ${u}`);
-      console.log("");
-    }
-    console.log("Options:");
-    for (const [name, spec] of Object.entries(CLI_OPTIONS)) {
-      const flags = [spec.short ? `-${spec.short}` : null, `--${name}`].filter(Boolean).join(", ");
-      console.log(`  ${flags.padEnd(22)} ${spec.desc}`);
-    }
-  }
-}
-
-async function main() {
-  const parsed = parseArgs({
-    allowPositionals: true,
-    options: toParseArgsOptions(CLI_OPTIONS),
-  });
-  const args: { positionals: string[]; values: SandboxValues } = parsed as unknown as {
-    positionals: string[];
-    values: SandboxValues;
-  };
-
-  const positional = args.positionals[0];
-  const wantsHelp = args.values.help || positional === "help";
-  const helpFor = wantsHelp ? args.positionals[1] : undefined;
-
-  if (wantsHelp) {
-    printHelp(helpFor);
-    process.exit(0);
-  }
-
-  const cmdName = positional && COMMANDS[positional] ? positional : "shell";
-  await COMMANDS[cmdName].run({ args });
-}
-
-function configPath(args: { localWorkspaceFolder: string }) {
-  return path.join(args.localWorkspaceFolder, ".agent-sandbox");
-}
-
-async function loadConfig(args: { localWorkspaceFolder: string }): Promise<SandboxConfig> {
-  const configFile = path.join(configPath(args), "config.json");
-  if (!fs.existsSync(configFile)) {
-    return {};
-  }
-  const content = fs.readFileSync(configFile, "utf8");
-  const parsed = JSON.parse(content);
-  for (const port of parsed.ports) {
-    if (typeof port !== "string" || !/^\d+(:\d+)?$/.test(port)) {
-      throw new Error(`Invalid port: ${port}`);
-    }
-  }
-  for (const readonly of parsed.readonly) {
-    if (typeof readonly !== "string") {
-      throw new Error(`Invalid readonly path: ${readonly}`);
-    }
-    // Make sure it's a reasonable-looking relative path
-    if (readonly.startsWith("/")) {
-      throw new Error(`Readonly paths should be relative: ${readonly}`);
-    }
-  }
-  return parsed;
-}
-
-async function containerExists(localWorkspaceFolder: string, branchSan?: string | null) {
-  const containerName = getContainerName({ localWorkspaceFolder, branchSan });
-  const nameFilter = `^/?${escapeRegex(containerName)}$`;
-  const containerExists = await $`docker ps -q --filter name=${nameFilter}`.quiet();
-  return !!containerExists.stdout.trim();
-}
-
-async function buildBase(args: {
-  tag: string;
-  claudeCodeVersion: string;
-  codexVersion: string;
-  gitDeltaVersion: string;
-  astGrepVersion: string;
-}) {
-  // Resolve floating versions to concrete versions so Docker cache can be reused
-  async function resolveNpmVersion(pkg: string, requested: string): Promise<string> {
-    if (requested !== "latest") return requested;
-    try {
-      const result = await $`npm view ${pkg} version`.quiet();
-      const version = result.stdout.trim();
-      if (!version) throw new Error("empty version");
-      return version;
-    } catch {
-      console.log(
-        chalk.yellow(
-          `Warning: failed to resolve latest for ${pkg}. Falling back to 'latest' which may reduce cache reuse.`,
-        ),
-      );
-      return requested;
-    }
-  }
-
-  const baseDockerfilePath = path.join(__dirname, "..", "base-image", "Dockerfile");
-
-  if (!fs.existsSync(baseDockerfilePath)) {
-    console.error("Error: " + baseDockerfilePath + " not found.");
-    process.exit(1);
-  }
-
-  const imageName = `agent-sandbox-base:${args.tag}`;
-
-  // Resolve any 'latest' tags to concrete versions
-  const resolvedClaude = await resolveNpmVersion("@anthropic-ai/claude-code", args.claudeCodeVersion);
-  const resolvedCodex = await resolveNpmVersion("@openai/codex", args.codexVersion);
-  const resolvedAstGrep = await resolveNpmVersion("@ast-grep/cli", args.astGrepVersion);
-
-  const buildArgValues = {
-    CLAUDE_CODE_VERSION: resolvedClaude,
-    CODEX_VERSION: resolvedCodex,
-    GIT_DELTA_VERSION: args.gitDeltaVersion,
-    AST_GREP_VERSION: resolvedAstGrep,
-  };
-
-  const buildArgs = Object.entries(buildArgValues).flatMap(([key, value]) => [`--build-arg`, `${key}=${value}`]);
-
-  console.log(chalk.cyan(`Building base image: ${imageName}`));
-  console.log(
-    chalk.gray(
-      `Claude Code version: ${args.claudeCodeVersion}${
-        args.claudeCodeVersion === "latest" ? ` -> ${resolvedClaude}` : ""
-      }`,
-    ),
-  );
-  console.log(
-    chalk.gray(`Codex version: ${args.codexVersion}${args.codexVersion === "latest" ? ` -> ${resolvedCodex}` : ""}`),
-  );
-  console.log(chalk.gray(`Git Delta version: ${args.gitDeltaVersion}`));
-  console.log(
-    chalk.gray(
-      `ast-grep version: ${args.astGrepVersion}${args.astGrepVersion === "latest" ? ` -> ${resolvedAstGrep}` : ""}`,
-    ),
-  );
-
-  // No need to force --no-cache; resolved versions keep cache deterministic
-
-  const contextPath = path.dirname(baseDockerfilePath);
-  await $`docker build -t ${imageName} ${buildArgs} -f ${baseDockerfilePath} ${contextPath}`;
-
-  console.log(chalk.green(`Successfully built base image: ${imageName}`));
-}
-
-async function build(args: { localWorkspaceFolder: string; baseTag?: string }) {
-  const agentSandboxPath = configPath(args);
-  const dockerfilePath = path.join(agentSandboxPath, "Dockerfile");
-
-  if (!fs.existsSync(dockerfilePath)) {
-    console.error("Error: .agent-sandbox/Dockerfile not found.");
-    console.error(`Please run 'agent-sandbox init' in ${args.localWorkspaceFolder} first.`);
-    process.exit(1);
-  }
-
-  const baseTag = args.baseTag || "latest";
-  const buildArgValues = {
-    BASE_IMAGE_TAG: baseTag,
-  };
-
-  const buildArgs = Object.entries(buildArgValues).flatMap(([key, value]) => [`--build-arg`, `${key}=${value}`]);
-
-  const image = getImageName(args);
-
-  console.log(chalk.cyan(`Building image: ${image}`));
-  console.log(chalk.gray(`Using base image tag: ${baseTag}`));
-
-  await $`docker build -t ${image} ${buildArgs} -f ${dockerfilePath} ${agentSandboxPath}`;
-
-  console.log(chalk.green(`Successfully built image: ${image}`));
-}
-
-async function init(args: { localWorkspaceFolder: string; force: boolean }) {
-  const agentSandboxPath = configPath(args);
-
-  if ((await containerExists(args.localWorkspaceFolder)) && args.force) {
-    console.log(chalk.yellow(`Container is running. Stopping...`));
-    await stop(args);
-  }
-
-  if (fs.existsSync(agentSandboxPath)) {
-    if (args.force) {
-      console.log(chalk.yellow("Force removing existing .agent-sandbox directory"));
-      await $`rm -r ${agentSandboxPath}`;
-    } else {
-      console.error("Error: .agent-sandbox directory already exists.");
-      console.error("Remove it first if you want to reinitialize.");
-      process.exit(1);
-    }
-  }
-
-  const templatePath = path.join(__dirname, "..", "template");
-
-  await $`cp -RL ${templatePath}/ ${agentSandboxPath}/`;
-
-  console.log(chalk.green(`Initialized .agent-sandbox directory in ${args.localWorkspaceFolder}`));
-
-  await build(args);
-}
-
-function getWorkspaceHash(localWorkspaceFolder: string): string {
-  const fullPath = path.resolve(localWorkspaceFolder);
-  return crypto.createHash("md5").update(fullPath).digest("hex");
-}
-
-function getImageName(args: { localWorkspaceFolder: string }) {
-  const workspaceName = path.basename(args.localWorkspaceFolder);
-  const hash = getWorkspaceHash(args.localWorkspaceFolder);
-  return `agent-sandbox-${workspaceName}-${hash}`;
-}
-
-function getContainerName(args: { localWorkspaceFolder: string; branchSan?: string | null }) {
-  const workspaceName = path.basename(args.localWorkspaceFolder);
-  const hash = getWorkspaceHash(args.localWorkspaceFolder);
-  if (args.branchSan) {
-    return `agent-sandbox-${workspaceName}-${args.branchSan}-${hash}`;
-  }
-  return `agent-sandbox-${workspaceName}-${hash}`;
-}
-
-function getHistoryVolumeName(args: { localWorkspaceFolder: string }) {
-  const workspaceName = path.basename(args.localWorkspaceFolder);
-  const hash = getWorkspaceHash(args.localWorkspaceFolder);
-  return `agent-sandbox-history-${workspaceName}-${hash}`;
-}
-
-function getAdminContainerName(args: { localWorkspaceFolder: string }) {
-  const workspaceName = path.basename(args.localWorkspaceFolder);
-  const hash = getWorkspaceHash(args.localWorkspaceFolder);
-  return `agent-sandbox-admin-${workspaceName}-${hash}`;
-}
-
-async function getDockerRunArgs(args: {
-  localWorkspaceFolder: string;
-  branch?: string | null;
-  baseTag?: string | null;
-}) {
-  const branch = args.branch || null;
-  const branchSan = branch ? sanitizeBranch(branch) : null;
-  const containerName = getContainerName({ localWorkspaceFolder: args.localWorkspaceFolder, branchSan });
-  const historyVolume = getHistoryVolumeName(args);
-  const config = await loadConfig(args);
-  const workspaceName = path.basename(args.localWorkspaceFolder);
-  const repoShelfVolume = getRepoShelfVolumeNameFromPath(args.localWorkspaceFolder);
-
-  const mounts = [
-    `source=${historyVolume},target=/commandhistory,type=volume`,
-    `source=${configVolume},target=/home/node/.claude,type=volume`,
-    `source=${codexConfigVolume},target=/home/node/.codex,type=volume`,
-    "source=/etc/localtime,target=/etc/localtime,type=bind,readonly",
-    `source=${repoShelfVolume},target=/repo-shelf,type=volume`,
-  ];
-
-  const env = {
-    NODE_OPTIONS: "--max-old-space-size=4096",
-    CLAUDE_CONFIG_DIR: "/home/node/.claude",
-  };
-
-  const workspaceMount = `source=${args.localWorkspaceFolder},target=/workspace/${workspaceName},type=bind,consistency=delegated`;
-
-  const readonlyMounts: string[] = [];
-  if (config.readonly) {
-    for (const readonlyPath of config.readonly) {
-      const sourcePath = path.join(args.localWorkspaceFolder, readonlyPath);
-      if (fs.existsSync(sourcePath)) {
-        const targetPath = `/workspace/${workspaceName}/${readonlyPath}`;
-        readonlyMounts.push(`source=${sourcePath},target=${targetPath},type=bind,readonly`);
-      }
-    }
-  }
-
-  readonlyMounts.push(`source=${configPath(args)},target=/.agent-sandbox,type=bind,readonly`);
-
-  const ports = config.ports || [];
-
-  const runArgs = [
-    "--name",
-    containerName,
-    "--label",
-    `workspace=${args.localWorkspaceFolder}`,
-    ...(branchSan ? ["--label", `branch=${branchSan}`] : []),
-    "--label",
-    `repoShelfVolume=${repoShelfVolume}`,
-    "-d",
-    "--cap-add=NET_ADMIN",
-    "--cap-add=NET_RAW",
-    ...mounts.flatMap((mount) => ["--mount", mount]),
-    "--mount",
-    workspaceMount,
-    ...readonlyMounts.flatMap((mount) => ["--mount", mount]),
-    "--workdir",
-    branchSan ? `/repo-shelf/worktrees/${branchSan}` : `/workspace/${workspaceName}`,
-    ...Object.entries(env).flatMap(([key, value]) => ["-e", `${key}=${value}`]),
-    ...ports.flatMap((port) => ["-p", port]),
-  ];
-
-  return { runArgs, containerName };
-}
-
-async function getAdminDockerRunArgs(args: { localWorkspaceFolder: string; root?: boolean | null }) {
-  const workspaceName = path.basename(args.localWorkspaceFolder);
-  const historyVolume = getHistoryVolumeName(args);
-  const config = await loadConfig(args);
-  const repoShelfVolume = getRepoShelfVolumeNameFromPath(args.localWorkspaceFolder);
-  const containerName = getAdminContainerName(args);
-
-  const mounts = [
-    `source=${historyVolume},target=/commandhistory,type=volume`,
-    `source=${configVolume},target=/home/node/.claude,type=volume`,
-    `source=${codexConfigVolume},target=/home/node/.codex,type=volume`,
-    "source=/etc/localtime,target=/etc/localtime,type=bind,readonly",
-    `source=${repoShelfVolume},target=/repo-shelf,type=volume`,
-  ];
-
-  const env: Record<string, string> = {
-    NODE_OPTIONS: "--max-old-space-size=4096",
-    CLAUDE_CONFIG_DIR: "/home/node/.claude",
-  };
-
-  const workspaceMount = `source=${args.localWorkspaceFolder},target=/workspace/${workspaceName},type=bind,consistency=delegated`;
-
-  // In admin mode we do NOT mount /.agent-sandbox and we do NOT add readonly overlays
-  const ports = config.ports || [];
-
-  const runArgs: string[] = [
-    "--name",
-    containerName,
-    "--rm",
-    "-it",
-    "--label",
-    `workspace=${args.localWorkspaceFolder}`,
-    "--label",
-    "mode=admin",
-    "--cap-add=NET_ADMIN",
-    "--cap-add=NET_RAW",
-    ...mounts.flatMap((mount) => ["--mount", mount]),
-    "--mount",
-    workspaceMount,
-    "--workdir",
-    `/workspace/${workspaceName}`,
-    ...Object.entries(env).flatMap(([key, value]) => ["-e", `${key}=${value}`]),
-    ...ports.flatMap((port) => ["-p", port]),
-  ];
-
-  if (args.root) {
-    runArgs.unshift("-u", "0:0");
-  }
-
-  return { runArgs, containerName };
-}
-
-async function start(args: {
-  localWorkspaceFolder: string;
-  build: boolean;
-  restart: boolean;
-  branch?: string | null;
-  baseTag?: string | null;
-}) {
-  const branchSan = args.branch ? sanitizeBranch(args.branch) : null;
-  if (args.branch) {
-    await ensureShelfAndWorktree({
-      localWorkspaceFolder: args.localWorkspaceFolder,
-      branch: args.branch,
-      baseTag: args.baseTag || "latest",
-    });
-  }
-
-  const image = getImageName({ localWorkspaceFolder: args.localWorkspaceFolder });
-  const imageExists = await $`docker images -q ${image}`.quiet();
-  if (!imageExists.stdout.trim() || args.build) {
-    await build({ localWorkspaceFolder: args.localWorkspaceFolder, baseTag: args.baseTag || undefined });
-  }
-
-  const containerName = getContainerName({ localWorkspaceFolder: args.localWorkspaceFolder, branchSan });
-  if (await containerExists(args.localWorkspaceFolder, branchSan)) {
-    if (args.restart) {
-      await stop(args);
-    } else {
-      console.log(`Container ${containerName} is already running`);
-      return;
-    }
-  }
-
-  const { runArgs } = await getDockerRunArgs({
-    localWorkspaceFolder: args.localWorkspaceFolder,
-    branch: args.branch,
-    baseTag: args.baseTag,
+program
+  .command("build-base")
+  .description("Build the shared agent-sandbox base image")
+  .option("--tag <tag>", "Tag for the base image", "latest")
+  .option("--claude-code-version <version>", "Version of @anthropic-ai/claude-code to install")
+  .option("--codex-version <version>", "Version of @openai/codex to install")
+  .option("--git-delta-version <version>", "Version of git-delta to install")
+  .option("--ast-grep-version <version>", "Version of @ast-grep/cli to install")
+  .action(async (opts: BuildBaseOptions) => {
+    await buildBaseImage(opts);
   });
 
-  await $`docker run ${runArgs} ${image} tail -f /dev/null`.quiet();
-  console.log(`Started container: ${containerName}`);
-}
-
-async function admin(args: { localWorkspaceFolder: string; root: boolean; build: boolean }) {
-  // Ensure image exists
-  const image = getImageName({ localWorkspaceFolder: args.localWorkspaceFolder });
-  const imageExists = await $`docker images -q ${image}`.quiet();
-  if (!imageExists.stdout.trim() || args.build) {
-    await build({ localWorkspaceFolder: args.localWorkspaceFolder });
-  }
-
-  const { runArgs, containerName } = await getAdminDockerRunArgs({
-    localWorkspaceFolder: args.localWorkspaceFolder,
-    root: args.root,
+program
+  .command("init [path]")
+  .description("Initialize the sandbox template for a repository")
+  .option("--build", "Build the per-repo image after initialization", false)
+  .option("--base-tag <tag>", "Base image tag to use", "latest")
+  .action(async (pathArg: string | undefined, options: { build?: boolean; baseTag: string }) => {
+    const repoPath = await resolveRepoPath(pathArg);
+    await initializeSandboxConfig(repoPath);
+    if (options.build) {
+      const info = await loadRepoAndConfigInfo(repoPath);
+      await buildRepoImage(info, { baseTag: options.baseTag });
+    }
   });
 
-  console.log(chalk.cyan(`Starting admin shell in container ${containerName}...`));
-  await $({ stdio: "inherit" })`docker run ${runArgs} ${image}`;
-}
-
-async function showRun(args: { localWorkspaceFolder: string; branch?: string | null; baseTag?: string | null }) {
-  const image = getImageName({ localWorkspaceFolder: args.localWorkspaceFolder });
-  const imageExists = await $`docker images -q ${image}`.quiet();
-  if (!imageExists.stdout.trim()) {
-    console.log(chalk.yellow(`Image ${image} not found. Run 'agent-sandbox build' first.`));
-    return;
-  }
-
-  const { runArgs } = await getDockerRunArgs({
-    localWorkspaceFolder: args.localWorkspaceFolder,
-    branch: args.branch,
-    baseTag: args.baseTag,
+program
+  .command("build [path]")
+  .description(
+    "Build the per-repository sandbox image. If no .agent-sandbox/Dockerfile exists, use shell --build or exec --build to fall back to the base image.",
+  )
+  .option("--base-tag <tag>", "Base image tag to use", "latest")
+  .action(async (pathArg: string | undefined, options: BuildOptions) => {
+    const repoPath = await resolveRepoPath(pathArg);
+    const info = await loadRepoAndConfigInfo(repoPath);
+    await buildRepoImage(info, { baseTag: options.baseTag });
   });
 
-  // Use JSON.stringify for proper shell escaping
-  const escapeArg = (arg: string) => {
-    // If arg contains spaces, quotes, or special shell characters, escape it
-    if (/[ "'$`\\\n\t;|&()<>]/.test(arg)) {
-      return JSON.stringify(arg);
-    }
-    return arg;
-  };
+program
+  .command("start [path]")
+  .description("Start the sandbox container in the background")
+  .option("--branch <branch>", "Worktree branch to provision")
+  .option("--base-tag <tag>", "Base image tag to use", "latest")
+  .option("--build", "Build the per-repo image before starting", false)
+  .action(async (pathArg: string | undefined, options: StartOptions) => {
+    const repoPath = await resolveRepoPath(pathArg);
+    const info = await loadRepoAndConfigInfo(repoPath);
+    const image = await resolveImage(info, options);
+    const config = await loadSandboxConfig(info);
+    await startContainer(info, image, config, options);
+    await ensureRepoProvisioned(repoPath, options.branch);
+    console.log(`Container ${getContainerName(info)} started using ${image}.`);
+  });
 
-  const command = `docker run ${runArgs.map(escapeArg).join(" ")} ${image} tail -f /dev/null`;
-  console.log(chalk.cyan("Docker run command:"));
-  console.log(command);
-}
+program
+  .command("stop [path]")
+  .description("Stop the sandbox container")
+  .action(async (pathArg?: string) => {
+    const repoPath = await resolveRepoPath(pathArg);
+    const info = await loadRepoAndConfigInfo(repoPath);
+    await ensureContainerStopped(info);
+    console.log(`Stopped container ${getContainerName(info)}.`);
+  });
 
-async function shell(args: {
-  localWorkspaceFolder: string;
-  restart: boolean;
-  build: boolean;
-  branch?: string | null;
-  baseTag?: string | null;
-}) {
-  const branchSan = args.branch ? sanitizeBranch(args.branch) : null;
-  const exists = await containerExists(args.localWorkspaceFolder, branchSan);
-  if (!exists || args.restart) {
-    await start(args);
-  }
-
-  const containerName = getContainerName({ localWorkspaceFolder: args.localWorkspaceFolder, branchSan });
-  await $({
-    stdio: "inherit",
-  })`docker exec -it ${containerName} bash`;
-}
-
-async function stop(args: { localWorkspaceFolder: string; branch?: string | null }) {
-  const branchSan = args.branch ? sanitizeBranch(args.branch) : null;
-  const containerName = getContainerName({ localWorkspaceFolder: args.localWorkspaceFolder, branchSan });
-  await $`docker stop ${containerName}`.quiet();
-  await $`docker rm ${containerName}`.quiet();
-  console.log(`Container ${containerName} stopped and removed`);
-}
-
-async function codexInitConfig(args: { auth: boolean; force: boolean }) {
-  const home = process.env.HOME || process.env.USERPROFILE;
-  if (!home) {
-    console.error("Unable to determine HOME directory on host.");
-    process.exit(1);
-  }
-
-  // Prepare template files for config.toml and AGENTS.md in a temp dir
-  const tmpBase = await fs.promises.mkdtemp(path.join(os.tmpdir(), "codex-init-"));
-  const templatesDir = path.join(tmpBase, "templates");
-  fs.mkdirSync(templatesDir, { recursive: true });
-
-  const configToml = ["[profiles.high]", 'model = "gpt-5"', 'model_reasoning_effort = "high"', ""].join("\n");
-
-  const agentsMd = `# Context for AI agents (sandbox)
-
-You are working within a containerized sandbox environment ("agent-sandbox"), intended to be a space where you can exercise autonomy more freely.
-
-## Installed Tools
-- git, node, npm
-- ast-grep: Structural search and rewrite tool. Available in the agent-sandbox base image as \`ast-grep\` (help: \`ast-grep --help\`, docs: https://ast-grep.github.io/llms.txt).
-`;
-
-  fs.writeFileSync(path.join(templatesDir, "config.toml"), configToml, "utf8");
-  fs.writeFileSync(path.join(templatesDir, "AGENTS.md"), agentsMd, "utf8");
-
-  // Optional host auth directory
-  const hostCodexDir = path.join(home, ".codex");
-  if (args.auth) {
-    if (!fs.existsSync(hostCodexDir)) {
-      console.error(`No host Codex directory found at ${hostCodexDir}`);
-      console.error("Run 'codex login' on the host first or omit --auth.");
-      process.exit(1);
-    }
-  }
-
-  console.log(chalk.cyan("Initializing Codex config volume..."));
-  const baseImage = "agent-sandbox-base:latest";
-
-  const scriptLines: string[] = [];
-  scriptLines.push(
-    // Create destination directory if it doesn't exist
-    "mkdir -p /dst",
-    // config.toml
-    'if [ -f /dst/config.toml ] && [ "$FORCE" != "1" ]; then echo \'config.toml exists; leaving as-is\'; else cp -f /src-templates/config.toml /dst/config.toml; fi',
-    // AGENTS.md
-    'if [ -f /dst/AGENTS.md ] && [ "$FORCE" != "1" ]; then echo \'AGENTS.md exists; leaving as-is\'; else cp -f /src-templates/AGENTS.md /dst/AGENTS.md; fi',
+program
+  .command("shell [path]")
+  .description("Open an interactive shell in the sandbox")
+  .option("--branch <branch>", "Worktree branch to provision")
+  .option("--base-tag <tag>", "Base image tag to use", "latest")
+  .option("--build", "Build the per-repo image before starting", false)
+  .action(
+    async (
+      pathArg: string | undefined,
+      options: {
+        branch?: string;
+        baseTag: string;
+        build?: boolean;
+      },
+    ) => {
+      const exitCode = await handleShellCommand(pathArg, {
+        ...options,
+        repoPath: pathArg,
+        admin: false,
+        asRoot: false,
+      });
+      process.exitCode = exitCode;
+    },
   );
 
-  if (args.auth) {
-    // auth.json
-    scriptLines.push("cp -f /src-auth/auth.json /dst/");
-    // profile.json
-    scriptLines.push(
-      "if [ -f /src-auth/profile.json ]; then ",
-      '  if [ -f /dst/profile.json ] && [ "$FORCE" != "1" ]; then echo \'profile.json exists; leaving as-is\'; else cp -f /src-auth/profile.json /dst/; fi; ',
-      "else echo 'No profile.json on host; skipping'; fi",
-    );
-  }
+program
+  .command("admin [path]")
+  .description("Open an admin shell with relaxed guardrails")
+  .option("--root", "Run the shell as root", false)
+  .option("--firewall", "Use the sandbox firewall", true)
+  .option("--no-firewall", "Disable the sandbox firewall")
+  .option("--base-tag <tag>", "Base image tag to use", "latest")
+  .option("--build", "Build the per-repo image before starting", false)
+  .action(
+    async (
+      pathArg: string | undefined,
+      options: { root?: boolean; baseTag: string; build?: boolean; firewall?: boolean },
+    ) => {
+      const exitCode = await runAdminShell(pathArg, {
+        ...options,
+        asRoot: !!options.root,
+        admin: true,
+        skipFirewall: !options.firewall,
+      });
+      process.exitCode = exitCode;
+    },
+  );
 
-  scriptLines.push("echo 'Current files in shared volume:'", "ls -la /dst");
-  const script = scriptLines.join("; ");
+program
+  .command("exec [path]")
+  .description("Execute a non-interactive command in the sandbox")
+  .allowExcessArguments(true)
+  .option("--branch <branch>", "Worktree branch to provision")
+  .option("--base-tag <tag>", "Base image tag to use", "latest")
+  .option("--build", "Build the per-repo image before starting", false)
+  .option("--env <key=value>", "Environment variable to set", collectEnv, [] as string[])
+  .option("--print-cmd", "Print the docker run/exec invocations", false)
+  .option("--admin", "Disable read-only overlays", false)
+  .action(
+    async (
+      pathArg: string | undefined,
+      options: ExecOptions & { env: string[]; admin?: boolean; printCmd?: boolean },
+      command: Command,
+    ) => {
+      const exitCode = await handleExecCommand(pathArg, options, command);
+      process.exitCode = exitCode;
+    },
+  );
 
-  const dockerArgs = [
-    "run",
-    "--rm",
-    "--entrypoint",
-    "/bin/bash",
-    "-v",
-    `${templatesDir}:/src-templates:ro`,
-    "-v",
-    `${codexConfigVolume}:/dst`,
-  ];
-  if (args.auth) {
-    dockerArgs.push("-v", `${hostCodexDir}:/src-auth:ro`);
-  }
-  dockerArgs.push("-e", `FORCE=${args.force ? "1" : "0"}`);
-  dockerArgs.push(baseImage, "-lc", script);
+program
+  .command("show-run [path]")
+  .description("Print the docker run command that would be used")
+  .option("--base-tag <tag>", "Base image tag to use", "latest")
+  .action(async (pathArg: string | undefined, options: StartOptions) => {
+    const repoPath = await resolveRepoPath(pathArg);
+    const info = await loadRepoAndConfigInfo(repoPath);
+    const image = await resolveImage(info, options);
+    const config = await loadSandboxConfig(info);
+    await showRunCommand(info, image, config, options);
+  });
 
-  try {
-    const result = await $`docker ${dockerArgs}`.quiet();
-    process.stdout.write(result.stdout);
-    console.log(chalk.green("Codex config initialization complete."));
-  } finally {
-    // Best-effort cleanup of temporary templates directory
-    try {
-      await fs.promises.rm(tmpBase, { recursive: true, force: true });
-    } catch {
-      // ignore cleanup errors
-    }
-  }
-}
+program
+  .command("volumes [path]")
+  .description("List volumes used by this repository sandbox")
+  .action(async (pathArg?: string) => {
+    const repoPath = await resolveRepoPath(pathArg);
+    const info = await loadRepoAndConfigInfo(repoPath);
+    await listVolumes(info);
+  });
 
-async function codexLogout() {
-  console.log(chalk.cyan("Removing local Codex credentials from shared volume..."));
-  const baseImage = "agent-sandbox-base:latest";
-  const script = "rm -f /dst/auth.json /dst/profile.json; echo 'Remaining files in shared volume:'; ls -la /dst";
-  const result =
-    await $`docker run --rm --entrypoint /bin/bash -v ${codexConfigVolume}:/dst ${baseImage} -lc ${script}`.quiet();
-  console.log(chalk.green("Local Codex credentials deleted from the volume."));
-  process.stdout.write(result.stdout);
-}
+program
+  .command("shared-volumes")
+  .description("List shared sandbox volumes")
+  .action(async () => {
+    await listSharedVolumes();
+  });
 
-// --- Branch-aware helpers ---
-function sanitizeBranch(name: string): string {
-  return name.replace(/[\s/]+/g, "__");
-}
+program
+  .command("list")
+  .description("List running agent-sandbox containers")
+  .action(async () => {
+    await listContainers();
+  });
 
-// Repo-shelf volume naming: hash the absolute host path
-function getRepoShelfVolumeNameFromPath(localWorkspaceFolder: string): string {
-  const fullPath = path.resolve(localWorkspaceFolder);
-  const hash = crypto.createHash("md5").update(fullPath).digest("hex");
-  return `agent-sbx-repo-${hash}`;
-}
+program
+  .command("codex-init-config [path]")
+  .description("Initialize the shared Codex configuration volume")
+  .option("--auth", "Copy host auth.json into the volume", false)
+  .option("--force", "Overwrite existing configuration files", false)
+  .action(async (pathArg: string | undefined, options: { auth?: boolean; force?: boolean }) => {
+    const repoPath = await resolveRepoPath(pathArg);
+    await initCodexConfig({ auth: options.auth, force: options.force, repoPath });
+  });
 
-async function ensureShelfAndWorktree(args: { localWorkspaceFolder: string; branch: string; baseTag?: string | null }) {
-  const repoName = path.basename(args.localWorkspaceFolder);
-  const branchSan = sanitizeBranch(args.branch);
-  const repoShelfVolume = getRepoShelfVolumeNameFromPath(args.localWorkspaceFolder);
-  const baseImage = `agent-sandbox-base:${args.baseTag || "latest"}`;
-
-  await $`docker volume create ${repoShelfVolume}`.quiet();
-
-  const script = [
-    "set -euo pipefail",
-    "# Pre-create shelf paths owned by node",
-    "install -d -o node -g node /repo-shelf/repo /repo-shelf/worktrees",
-    'BR_DIR="/repo-shelf/worktrees/$BRANCH_SAN"',
-    'install -d -o node -g node "$BR_DIR"',
-    'HOST_URL="file:///workspace/$REPO_NAME"',
-    "export BR_DIR HOST_URL",
-    'as_node() { su -p -s /bin/sh -c "$1" node; }',
-    "# Clone/wire/fetch as node",
-    "as_node 'test -d /repo-shelf/repo/.git || git clone --no-checkout \"$HOST_URL\" /repo-shelf/repo'",
-    'as_node \'git -C /repo-shelf/repo remote add host "$HOST_URL" 2>/dev/null || git -C /repo-shelf/repo remote set-url host "$HOST_URL"\'',
-    // Intentionally do not set an 'origin' remote inside the shelf repo (host-only provisioning)
-    "as_node 'git -C /repo-shelf/repo fetch --prune host'",
-    "# Create or update worktree as node (idempotent)",
-    "# Skip if BR_DIR is already a registered worktree (avoid awk quoting issues)",
-    "if as_node 'git -C /repo-shelf/repo worktree list --porcelain | grep -Fx -- \"worktree $BR_DIR\" >/dev/null'; then",
-    '  echo "Worktree already present at $BR_DIR"',
-    "elif as_node 'git -C /repo-shelf/repo rev-parse --verify --quiet refs/remotes/host/$BRANCH_NAME'; then",
-    '  as_node \'git -C /repo-shelf/repo worktree add -B "$BRANCH_NAME" "$BR_DIR" "host/$BRANCH_NAME"\'',
-    "else",
-    '  as_node \'DEFAULT_BRANCH=$(git -C /repo-shelf/repo symbolic-ref --short -q refs/remotes/host/HEAD | sed "s#^host/##" || true); [ -n "$DEFAULT_BRANCH" ] || DEFAULT_BRANCH=$(git -C /workspace/\'"$REPO_NAME"\' symbolic-ref --short -q refs/remotes/origin/HEAD 2>/dev/null | sed "s#^origin/##" || true); [ -n "$DEFAULT_BRANCH" ] || DEFAULT_BRANCH=main; git -C /repo-shelf/repo worktree add -b "$BRANCH_NAME" "$BR_DIR" "host/$DEFAULT_BRANCH"\'',
-    "fi",
-    'test -d "$BR_DIR" || { echo >&2 "Failed to create worktree at $BR_DIR"; exit 1; }',
-  ].join("\n");
-
-  const dockerArgs = [
-    "run",
-    "--rm",
-    "--entrypoint",
-    "/bin/bash",
-    "-u",
-    "0:0",
-    // no ORIGIN_URL exported; we avoid wiring upstream remote inside the shelf repo
-    "-e",
-    `REPO_NAME=${repoName}`,
-    "-e",
-    `BRANCH_NAME=${args.branch}`,
-    "-e",
-    `BRANCH_SAN=${branchSan}`,
-    "-v",
-    `${repoShelfVolume}:/repo-shelf`,
-    "-v",
-    `${args.localWorkspaceFolder}:/workspace/${repoName}:ro`,
-    baseImage,
-    "-lc",
-    script,
-  ];
-
-  await $`docker ${dockerArgs}`.quiet();
-}
-
-async function listContainers() {
-  const fmt = '{{.Names}}\t{{.Label "workspace"}}\t{{.Label "branch"}}\t{{.Label "repoShelfVolume"}}';
-  const ps = await $`docker ps --format ${fmt}`.quiet();
-  const lines = ps.stdout.trim().split("\n").filter(Boolean);
-  if (!lines.length) {
-    console.log("No running agent-sandbox containers.");
-    return;
-  }
-  const rows: Array<{ name: string; mode: string; workdir: string; volume: string; hostPath: string }> = [];
-  for (const line of lines) {
-    const [name, hostPath, , volumeLabel] = line.split("\t");
-    if (!name || !hostPath) continue;
-    const inspect = await $`docker inspect -f ${"{{.Config.WorkingDir}}"} ${name}`.quiet();
-    const workdir = inspect.stdout.trim();
-    const mode = workdir.startsWith("/repo-shelf/worktrees/") ? "branch" : "bind";
-    let volume = volumeLabel || "";
-    if (!volume) {
-      volume = getRepoShelfVolumeNameFromPath(hostPath);
-    }
-    rows.push({ name, mode, workdir, volume, hostPath });
-  }
-  // Print header
-  console.log(["CONTAINER", "MODE", "WORKDIR", "REPO-SHELF-VOLUME", "HOST-PATH"].join("\t"));
-  for (const r of rows) {
-    console.log([r.name, r.mode, r.workdir, r.volume, r.hostPath].join("\t"));
-  }
-}
-
-function escapeRegex(input: string): string {
-  return input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
+program.parseAsync(process.argv).catch((error) => {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exitCode = 1;
 });
+
+async function handleShellCommand(pathArg: string | undefined, options: ShellOptions): Promise<number> {
+  const repoPath = options.repoPath ?? (await resolveRepoPath(pathArg));
+  const info = await loadRepoAndConfigInfo(repoPath);
+  const config = await loadSandboxConfig(info);
+  const image = await resolveImage(info, options);
+  if (!(await containerRunning(info))) {
+    await startContainer(info, image, config, options);
+  }
+  await ensureRepoProvisioned(repoPath, options.branch);
+  const branch =
+    options.branch ??
+    // default to current branch
+    (await $`git -C ${repoPath} rev-parse --abbrev-ref HEAD`.text()).trim();
+  console.log(`Opening shell in sandbox for branch ${branch}...`);
+  return openShell(info, branch);
+}
+
+async function runAdminShell(
+  pathArg: string | undefined,
+  options: ShellOptions & { skipFirewall: boolean },
+): Promise<number> {
+  const repoPath = options.repoPath ?? (await resolveRepoPath(pathArg));
+  const info = await loadRepoAndConfigInfo(repoPath);
+  const config = await loadSandboxConfig(info);
+  const image = await resolveImage(info, options);
+  const run = buildRunCommand(info, image, config, options, {
+    admin: true,
+    root: options.asRoot,
+    skipFirewall: options.skipFirewall,
+  });
+  return new Promise<number>((resolve) => {
+    const child = spawn("docker", run.args, { stdio: "inherit" });
+    child.on("close", (code: number | null) => resolve(code ?? 0));
+  });
+}
+
+async function resolveImage(info: RepoInfo, options: StartOptions): Promise<string> {
+  if (info.image.type === "base") {
+    return `${BASE_IMAGE_NAME}:${options.baseTag}`;
+  }
+
+  const desired = `${info.image.name}:${options.baseTag}`;
+  if (await imageExists(desired)) {
+    return desired;
+  }
+  if (options.build) {
+    await buildRepoImage(info, { baseTag: options.baseTag });
+    return desired;
+  } else {
+    throw new Error(`Image ${desired} not found and build option is disabled`);
+  }
+}
+
+async function handleExecCommand(
+  pathArg: string | undefined,
+  options: ExecOptions & { env: string[]; admin?: boolean; printCmd?: boolean },
+  command: Command,
+): Promise<number> {
+  const parentCommand = command.parent as (Command & { rawArgs?: string[] }) | undefined;
+  const rawArgs = parentCommand?.rawArgs ?? [];
+  const doubleDashIndex = rawArgs.indexOf("--");
+  const commandArgs = doubleDashIndex === -1 ? command.args : rawArgs.slice(doubleDashIndex + 1);
+  if (commandArgs.length === 0) {
+    console.error("agent-sandbox exec requires a command to run.");
+    return 2;
+  }
+
+  const repoCandidate = doubleDashIndex !== -1 ? pathArg : undefined;
+  let repoPath: string;
+  try {
+    repoPath = await resolveRepoPath(repoCandidate);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    return 2;
+  }
+
+  const envEntries: string[] = [];
+  for (const entry of options.env ?? []) {
+    if (!entry.includes("=") || entry.startsWith("=")) {
+      console.error(`Invalid --env value: ${entry}`);
+      return 2;
+    }
+    envEntries.push(entry);
+  }
+
+  const info = await loadRepoAndConfigInfo(repoPath);
+  const config = await loadSandboxConfig(info);
+  const image = await resolveImage(info, options);
+  const admin = Boolean(options.admin);
+  let containerIsRunning = await containerRunning(info);
+  if (admin && containerIsRunning) {
+    await ensureContainerStopped(info);
+    containerIsRunning = false;
+  }
+  let startedRunArgs: string[] | undefined;
+  if (!containerIsRunning) {
+    const runInfo = await startContainer(info, image, config, options, { admin });
+    startedRunArgs = runInfo.args;
+    containerIsRunning = true;
+  }
+  const branchName = await ensureRepoProvisioned(repoPath, options.branch);
+  const execCommand = buildExecCommand(info, branchName, commandArgs, { env: envEntries });
+  if (options.printCmd) {
+    if (startedRunArgs) {
+      console.log(formatDockerCommand(["docker", ...startedRunArgs]));
+    }
+    console.log(formatDockerCommand(["docker", ...execCommand.args]));
+  }
+  const exitCode = await runDockerCommand(execCommand.args);
+  return exitCode;
+}

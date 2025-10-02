@@ -1,21 +1,24 @@
-FROM node:23
+FROM node:24-bookworm-slim
 
 # Build arguments for tool versions
 ARG CLAUDE_CODE_VERSION=latest
 ARG CODEX_VERSION=latest
 ARG GIT_DELTA_VERSION=0.18.2
 ARG AST_GREP_VERSION=latest
+ARG PLAYWRIGHT_CORE_VERSION=1.55.1
 
 # Install basic development tools and iptables/ipset
 RUN apt-get update && apt-get install -y --no-install-recommends \
   less \
   git \
+  ca-certificates \
   procps \
   sudo \
   fzf \
   man-db \
   unzip \
   gnupg2 \
+  curl \
   gh \
   iptables \
   ipset \
@@ -51,6 +54,17 @@ RUN ARCH=$(dpkg --print-architecture) && \
   dpkg -i "git-delta_${GIT_DELTA_VERSION}_${ARCH}.deb" && \
   rm "git-delta_${GIT_DELTA_VERSION}_${ARCH}.deb"
 
+# Install playwright
+ENV PLAYWRIGHT_BROWSERS_PATH=/playwright
+RUN set -eux; \
+  mkdir -p /opt/pw-install; \
+  cd /opt/pw-install; \
+  npm init -y; \
+  npm i playwright-core@${PLAYWRIGHT_CORE_VERSION}; \
+  npm exec --no -- playwright-core install --with-deps; \
+  rm -rf /opt/pw-install /root/.npm /root/.cache /var/lib/apt/lists/*; \
+  chmod -R 0777 /playwright;
+
 # Set up non-root user
 USER node
 
@@ -67,26 +81,21 @@ ENV COLORTERM=truecolor
 ENV HISTFILE=/commandhistory/.bash_history
 ENV PROMPT_COMMAND="history -a"
 
-# Install AI CLIs globally
-RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
-RUN npm install -g @openai/codex@${CODEX_VERSION}
-RUN npm install -g opencode-ai@latest
-
 # Tools for AI agents
-RUN npm install -g @playwright/mcp@latest
+RUN npm install -g @playwright/mcp@latest || echo "warning: failed to install @playwright/mcp@latest"
+RUN npm install -g @ast-grep/cli@${AST_GREP_VERSION} || echo "warning: failed to install @ast-grep/cli@${AST_GREP_VERSION}"
 
-# Install code-aware grep (ast-grep)
-RUN npm install -g @ast-grep/cli@${AST_GREP_VERSION}
+# Install AI CLIs globally
+RUN npm install -g opencode-ai@latest || echo "warning: failed to install opencode-ai@latest"
 
-# Add freeclaude alias
+RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} || echo "warning: failed to install @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
 RUN echo "alias freeclaude='claude --dangerously-skip-permissions'" >> /home/node/.bashrc
 
-# Add freecodex alias (analagous to freeclaude)
+RUN npm install -g @openai/codex@${CODEX_VERSION} || echo "warning: failed to install @openai/codex@${CODEX_VERSION}"
 RUN echo "alias freecodex='codex --sandbox=danger-full-access'" >> /home/node/.bashrc
 
 # Copy and set up security scripts
 COPY ./init-firewall.sh ./git-wrapper.sh ./entrypoint.sh /usr/local/bin/
-
 USER root
 RUN chmod +x /usr/local/bin/init-firewall.sh && \
   chmod +x /usr/local/bin/entrypoint.sh && \

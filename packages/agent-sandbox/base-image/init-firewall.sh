@@ -1,44 +1,18 @@
 #!/bin/bash
-set -euo pipefail  # Exit on error, undefined vars, and pipeline failures
-IFS=$'\n\t'       # Stricter word splitting
+set -euo pipefail
+IFS=$'\n\t'
 
-# 1. Extract Docker DNS info BEFORE any flushing
-DOCKER_DNS_RULES=$(iptables-save -t nat | grep "127\.0\.0\.11" || true)
+echo "[agent-sandbox] Initializing firewall (fail-closed)..."
 
-# Flush existing rules and delete existing ipsets
-iptables -F
-iptables -X
-iptables -t nat -F
-iptables -t nat -X
-iptables -t mangle -F
-iptables -t mangle -X
-ipset destroy allowed-domains 2>/dev/null || true
+# Clean filter table; do not touch NAT/MANGLE (leave Docker plumbing intact)
+iptables -F || true
+iptables -X || true
 
-# 2. Selectively restore ONLY internal Docker DNS resolution
-if [ -n "$DOCKER_DNS_RULES" ]; then
-    echo "Restoring Docker DNS rules..."
-    iptables -t nat -N DOCKER_OUTPUT 2>/dev/null || true
-    iptables -t nat -N DOCKER_POSTROUTING 2>/dev/null || true
-    echo "$DOCKER_DNS_RULES" | xargs -L 1 iptables -t nat
-else
-    echo "No Docker DNS rules to restore"
-fi
-
-# First allow DNS and localhost before any restrictions
-# Allow outbound DNS
-iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
-# Allow inbound DNS responses
-iptables -A INPUT -p udp --sport 53 -j ACCEPT
-# Allow outbound SSH
-iptables -A OUTPUT -p tcp --dport 22 -j ACCEPT
-# Allow inbound SSH responses
-iptables -A INPUT -p tcp --sport 22 -m state --state ESTABLISHED -j ACCEPT
-# Allow localhost
-iptables -A INPUT -i lo -j ACCEPT
-iptables -A OUTPUT -o lo -j ACCEPT
-
-# Create ipset with CIDR support
-ipset create allowed-domains hash:net
+# Reset ipsets
+ipset destroy allowed_nets 2>/dev/null || true
+ipset destroy allowed_ips 2>/dev/null || true
+ipset create allowed_nets hash:net -exist
+ipset create allowed_ips  hash:ip  -exist
 
 # Fetch GitHub meta information and aggregate + add their IP ranges
 echo "Fetching GitHub IP ranges..."
@@ -59,23 +33,34 @@ while read -r cidr; do
         echo "ERROR: Invalid CIDR range from GitHub meta: $cidr"
         exit 1
     fi
-    echo "Adding GitHub range $cidr"
-    ipset add allowed-domains "$cidr"
+    echo "Adding GitHub range $cidr to allowed_nets"
+    ipset add allowed_nets "$cidr" 2>/dev/null || true
 done < <(echo "$gh_ranges" | jq -r '(.web + .api + .git)[]' | aggregate -q)
 
-# Resolve and add other allowed domains
-for domain in \
-    "registry.npmjs.org" \
-    "openrouter.ai" \
-    "api.openai.com" \
-    "auth.openai.com" \
-    "chatgpt.com" \
-    "api.anthropic.com" \
-    "sentry.io" \
-    "statsig.anthropic.com" \
-    "statsig.com"; do
+# Build allowlist of domains (A records) for HTTPS egress
+CONFIG_JSON="/.agent-sandbox/config.json"
+BASE_DOMAINS=(
+    "registry.npmjs.org"
+    "openrouter.ai"
+    "api.openai.com"
+    "auth.openai.com"
+    "chatgpt.com"
+    "api.anthropic.com"
+    "sentry.io"
+    "statsig.anthropic.com"
+    "statsig.com"
+)
+DOMAINS=("${BASE_DOMAINS[@]}")
+
+if [ -r "$CONFIG_JSON" ]; then
+    mapfile -t EXTRA_DOMAINS < <(jq -r '.egress_allow_domains[]? // empty' "$CONFIG_JSON" 2>/dev/null || true)
+    if [ "${#EXTRA_DOMAINS[@]}" -gt 0 ]; then
+        DOMAINS+=("${EXTRA_DOMAINS[@]}")
+    fi
+fi
+
+for domain in "${DOMAINS[@]}"; do
     echo "Resolving $domain..."
-    # Get only IPv4 A records (dig may print a CNAME first even with +short A)
     ips=$(dig +short A "$domain" | awk '/^([0-9]{1,3}\.){3}[0-9]{1,3}$/' | sort -u || true)
 
     # Fallback: use getent if dig produced nothing (e.g., DNS quirk)
@@ -89,57 +74,84 @@ for domain in \
     fi
 
     while read -r ip; do
-        # Double-check IPv4 shape; skip (don’t fail) if anything odd sneaks in
+        # Validate IPv4; skip odd tokens without failing
         if [[ ! "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
             echo "Skipping non-IPv4 token for $domain: $ip"
             continue
         fi
-        echo "Adding $ip for $domain"
-        ipset add allowed-domains "$ip" 2>/dev/null || true
+        echo "Allowing $domain -> $ip"
+        ipset add allowed_ips "$ip" 2>/dev/null || true
     done < <(echo "$ips")
 done
 
-# Get host IP from default route
-HOST_IP=$(ip route | grep default | cut -d" " -f3)
-if [ -z "$HOST_IP" ]; then
-    echo "ERROR: Failed to detect host IP"
-    exit 1
-fi
-
-HOST_NETWORK=$(echo "$HOST_IP" | sed "s/\.[0-9]*$/.0\/24/")
-echo "Host network detected as: $HOST_NETWORK"
-
-# Set up remaining iptables rules
-iptables -A INPUT -s "$HOST_NETWORK" -j ACCEPT
-iptables -A OUTPUT -d "$HOST_NETWORK" -j ACCEPT
-
-# Set default policies to DROP first
-iptables -P INPUT ACCEPT
+# Default policies (fail-closed)
+iptables -P INPUT DROP
 iptables -P FORWARD DROP
 iptables -P OUTPUT DROP
 
-# First allow established connections for already approved traffic
+# 1) Established/related first
 iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 
-# Then allow only specific outbound traffic to allowed domains
-iptables -A OUTPUT -m set --match-set allowed-domains dst -j ACCEPT
+# 2) Loopback always
+iptables -A INPUT -i lo -j ACCEPT
+iptables -A OUTPUT -o lo -j ACCEPT
+
+# 3) DNS: allow resolvers from /etc/resolv.conf (fallback to 127.0.0.11)
+mapfile -t RESOLVERS < <(awk '/^nameserver[[:space:]]+/ {print $2}' /etc/resolv.conf | tr -d '\r')
+if [ "${#RESOLVERS[@]}" -eq 0 ]; then
+    RESOLVERS=(127.0.0.11)
+fi
+for resolver in "${RESOLVERS[@]}"; do
+    if [[ "$resolver" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+        echo "Allowing DNS resolver $resolver"
+        iptables -A OUTPUT -p udp --dport 53 -d "$resolver" -j ACCEPT
+        iptables -A OUTPUT -p tcp --dport 53 -d "$resolver" -j ACCEPT
+    else
+        echo "Skipping non-IPv4 DNS resolver $resolver"
+    fi
+done
+
+# 4) Inbound ports (from .agent-sandbox/config.json: "ports": [<tcp>...])
+if [ -r "$CONFIG_JSON" ]; then
+    mapfile -t OPEN_PORTS < <(jq -r '.ports[]? // empty' "$CONFIG_JSON" 2>/dev/null || true)
+    for port in "${OPEN_PORTS[@]}"; do
+        if [[ "$port" =~ ^[0-9]+$ ]]; then
+            echo "Opening inbound TCP port $port"
+            iptables -A INPUT -p tcp --dport "$port" -m state --state NEW,ESTABLISHED -j ACCEPT
+        fi
+    done
+fi
+
+# 5) Outbound allowlists
+#    - GitHub meta networks: TCP 22 (SSH) and 443 (HTTPS)
+iptables -A OUTPUT -p tcp -m set --match-set allowed_nets dst --dport 22 -j ACCEPT
+iptables -A OUTPUT -p tcp -m set --match-set allowed_nets dst --dport 443 -j ACCEPT
+#    - Resolved IPs for domains: TCP 443 only
+iptables -A OUTPUT -p tcp -m set --match-set allowed_ips dst --dport 443 -j ACCEPT
 
 echo "Firewall configuration complete"
 echo "Verifying firewall rules..."
-if curl --connect-timeout 5 https://example.com >/dev/null 2>&1; then
-    echo "ERROR: Firewall verification failed - was able to reach https://example.com"
-    exit 1
-else
-    echo "Firewall verification passed - unable to reach https://example.com as expected"
-fi
 
-# Verify GitHub API access
-if ! curl --connect-timeout 5 https://api.github.com/zen >/dev/null 2>&1; then
-    echo "ERROR: Firewall verification failed - unable to reach https://api.github.com"
+# Negative probe must fail
+if curl --fail --silent --show-error --ipv4 --connect-timeout 5 --max-time 10 https://example.com >/dev/null; then
+    echo "ERROR: Firewall verification failed - unexpected access to https://example.com"
     exit 1
-else
-    echo "Firewall verification passed - able to reach https://api.github.com as expected"
 fi
+echo "Negative probe passed (blocked example.com)."
 
-# Test comment added by AI agent
+# Positive probes (GitHub + primary providers)
+curl_opts=(--silent --show-error --ipv4 --connect-timeout 5 --max-time 10)
+probe_ok=1
+curl "${curl_opts[@]}" https://api.github.com/zen >/dev/null || probe_ok=0
+for d in "${DOMAINS[@]}"; do
+    if ! curl "${curl_opts[@]}" "https://${d}" >/dev/null; then
+        echo "WARN: Probe failed for https://${d}"
+        probe_ok=0
+    fi
+done
+if [ "$probe_ok" -ne 1 ]; then
+    echo "ERROR: One or more required endpoints were not reachable through the allowlist."
+    exit 1
+fi
+echo "Firewall verification passed - required endpoints reachable, others blocked."
